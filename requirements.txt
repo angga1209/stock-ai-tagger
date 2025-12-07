@@ -1,0 +1,5 @@
+flet
+google-generativeai
+pillow
+piexif
+iptcinfo3
