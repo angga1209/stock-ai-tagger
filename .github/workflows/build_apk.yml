@@ -1,0 +1,48 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Ambil kode dari repository
+      - uses: actions/checkout@v4
+
+      # 2. Setup Java (Dibutuhkan Android)
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # 3. Setup Python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 4. Setup Flutter (Mesin utama Flet)
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      # 5. Install Library Python Anda
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # 6. Perintah Build Flet
+      # Perhatikan: Kita menyertakan semua library di --include-packages
+      - name: Flet Build APK
+        run: |
+          flet build apk --include-packages flet google-generativeai pillow piexif iptcinfo3
+
+      # 7. Upload APK yang sudah jadi agar bisa didownload
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stock-AI-App
+          path: build/app/outputs/flutter-apk/app-release.apk
