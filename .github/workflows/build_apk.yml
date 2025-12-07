@@ -34,11 +34,11 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # 6. Perintah Build Flet (SUDAH DIPERBAIKI)
-      # Perhatikan tanda titik (.) setelah 'apk'
+      # 6. Perintah Build Flet (VERSI BARU - LEBIH SIMPEL)
+      # Cukup gunakan titik (.) Flet akan otomatis baca requirements.txt
       - name: Flet Build APK
         run: |
-          flet build apk . --include-packages google-generativeai pillow piexif iptcinfo3
+          flet build apk . 
 
       # 7. Upload APK yang sudah jadi
       - name: Upload APK Artifact
