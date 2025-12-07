@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Ambil kode dari repository
+      # 1. Ambil kode
       - uses: actions/checkout@v4
 
       # 2. Setup Java
@@ -29,20 +29,20 @@ jobs:
         with:
           channel: 'stable'
 
-      # 5. Install Library Python Anda
+      # 5. Install Library
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
 
-      # 6. Perintah Build Flet (VERSI BARU - LEBIH SIMPEL)
-      # Cukup gunakan titik (.) Flet akan otomatis baca requirements.txt
+      # 6. Build APK
       - name: Flet Build APK
         run: |
           flet build apk . 
 
-      # 7. Upload APK yang sudah jadi
+      # 7. Upload APK (FIXED PATH)
+      # Menggunakan wildcard (**) agar GitHub mencari sendiri lokasi file .apk nya
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Stock-AI-App
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: "**/*.apk"
