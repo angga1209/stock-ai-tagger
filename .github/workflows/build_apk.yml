@@ -13,7 +13,7 @@ jobs:
       # 1. Ambil kode dari repository
       - uses: actions/checkout@v4
 
-      # 2. Setup Java (Dibutuhkan Android)
+      # 2. Setup Java
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 4. Setup Flutter (Mesin utama Flet)
+      # 4. Setup Flutter
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
@@ -34,13 +34,13 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # 6. Perintah Build Flet
-      # Perhatikan: Kita menyertakan semua library di --include-packages
+      # 6. Perintah Build Flet (SUDAH DIPERBAIKI)
+      # Perhatikan tanda titik (.) setelah 'apk'
       - name: Flet Build APK
         run: |
-          flet build apk --include-packages flet google-generativeai pillow piexif iptcinfo3
+          flet build apk . --include-packages google-generativeai pillow piexif iptcinfo3
 
-      # 7. Upload APK yang sudah jadi agar bisa didownload
+      # 7. Upload APK yang sudah jadi
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
