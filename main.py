@@ -6,7 +6,8 @@ import os
 import piexif
 from iptcinfo3 import IPTCInfo
 import time
-import shutil # Library untuk menyalin file
+import shutil
+import tempfile
 
 def main(page: ft.Page):
     page.title = "Stock AI Metadata Generator"
@@ -39,55 +40,51 @@ def main(page: ft.Page):
     status_text = ft.Text("Siap memilih gambar.", color=ft.Colors.GREY)
     progress_bar = ft.ProgressBar(visible=False, value=0)
 
-    # --- FUNGSI SAVE KE DOWNLOADS ---
+    # --- FUNGSI PATH ANDROID ---
     def get_download_path():
-        """Mencari path folder Download di Android"""
-        # Standar path Android
+        """Path folder Download Android"""
         return "/storage/emulated/0/Download"
 
-    # --- FUNGSI INTI ---
-    def embed_metadata_hardcore(file_path, title, keywords_str):
+    # --- FUNGSI INTI EMBEDDING ---
+    def embed_metadata_hardcore(work_path, title, keywords_str):
+        """
+        Melakukan embedding pada file di lokasi sementara (Temporary).
+        Lokasi ini harus memiliki izin Full Read/Write (Internal App Cache).
+        """
         try:
             # 1. EXIF Title
             try:
-                exif_dict = piexif.load(file_path)
+                exif_dict = piexif.load(work_path)
             except:
                 exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
             
             exif_dict["0th"][piexif.ImageIFD.ImageDescription] = title.encode('utf-8')
-            exif_dict["0th"][piexif.ImageIFD.XPTitle] = title.encode('utf-16le') # Windows Style
-            exif_dict["0th"][200] = title.encode('utf-8') # ImageDescription alternative ID
+            exif_dict["0th"][piexif.ImageIFD.XPTitle] = title.encode('utf-16le')
+            exif_dict["0th"][200] = title.encode('utf-8') 
             
             exif_bytes = piexif.dump(exif_dict)
-            piexif.insert(exif_bytes, file_path)
+            piexif.insert(exif_bytes, work_path)
             
-            time.sleep(0.5)
-
             # 2. IPTC Keywords
-            # KITA GUNAKAN LOGIKA BARU DI SINI
-            info = IPTCInfo(file_path, force=True)
+            # Opsi overwrite=True dan save_as agar tidak menghapus file asli lalu gagal rename
+            info = IPTCInfo(work_path, force=True)
             
-            # Bersihkan list keyword
             keyword_list = [k.strip() for k in keywords_str.split(',')]
-            
-            # Masukkan ke IPTC Standard
             info['keywords'] = keyword_list
             info['caption/abstract'] = title 
             info['object name'] = title
             
-            # Save (iptcinfo3 menyimpan ke file baru/temp lalu rename)
+            # Simpan in-place (di folder temp aman)
             info.save()
 
-            # Hapus file backup (~) yang dibuat iptcinfo
-            backup_file = file_path + "~"
+            # Bersihkan sampah backup yang dibuat iptcinfo
+            backup_file = work_path + "~"
             if os.path.exists(backup_file):
-                try: os.remove(backup_file)
-                except: pass
+                os.remove(backup_file)
                 
-            return True
+            return True, "Sukses"
         except Exception as e:
-            print(f"Error embedding: {e}")
-            return False
+            return False, str(e)
 
     def process_queue(e):
         if not api_key_field.value:
@@ -100,43 +97,41 @@ def main(page: ft.Page):
         btn_process.disabled = True
         progress_bar.visible = True
         
-        # Buat Folder Khusus di Downloads agar rapi
+        # 1. Siapkan Folder Tujuan (Public)
         download_folder = get_download_path()
-        output_folder = os.path.join(download_folder, "Stock_AI_Result")
+        final_output_folder = os.path.join(download_folder, "Stock_AI_Result")
         
-        # Coba buat folder, jika gagal (permission) lanjut saja
         try:
-            if not os.path.exists(output_folder):
-                os.makedirs(output_folder)
+            if not os.path.exists(final_output_folder):
+                os.makedirs(final_output_folder)
         except:
-            # Fallback jika gagal buat folder, pakai folder Download utama
-            output_folder = download_folder
+            final_output_folder = download_folder # Fallback
+
+        # 2. Siapkan Folder Kerja Sementara (Private Cache)
+        # Android mengizinkan full akses di sini tanpa batasan
+        temp_dir = tempfile.gettempdir() 
 
         genai.configure(api_key=api_key_field.value)
-        # Gunakan model yang Anda pastikan berhasil
         model = genai.GenerativeModel('gemini-2.5-flash') 
 
         total_files = len(selected_files)
         
         for index, file in enumerate(selected_files):
-            # Path file sementara dari Flet
-            temp_path = file.path
             file_name = file.name
             
-            # Siapkan path tujuan di folder Download
-            final_path = os.path.join(output_folder, f"TAGGED_{file_name}")
+            # STEP A: Salin ke Folder TEMP (Private) dulu
+            # Agar iptcinfo bisa mengacak-acak file tanpa diblokir Android
+            work_path = os.path.join(temp_dir, f"TEMP_{file_name}")
+            shutil.copy(file.path, work_path)
 
-            files_table.rows[index].cells[1].content = ft.Text("Processing...", color=ft.Colors.ORANGE)
+            files_table.rows[index].cells[1].content = ft.Text("AI Processing...", color=ft.Colors.ORANGE)
             status_text.value = f"Processing {index+1}/{total_files}: {file_name}"
             progress_bar.value = index / total_files
             page.update()
 
             try:
-                # 1. Salin file dari Temp ke Folder Download DULU
-                shutil.copy(temp_path, final_path)
-                
-                # 2. Analisa Gambar (Baca dari file baru)
-                img = PIL.Image.open(final_path)
+                # STEP B: Analisa Gambar
+                img = PIL.Image.open(work_path)
                 
                 prompt = """
                 Act as a professional Stock Photography SEO Expert. Analyze the provided image to generate metadata optimized for Adobe Stock and Shutterstock algorithms.
@@ -164,7 +159,7 @@ def main(page: ft.Page):
                 """
                 
                 response = model.generate_content([prompt, img])
-                img.close() # Lepas lock file
+                img.close() # Lepas lock
                 
                 text_resp = response.text.replace("```json", "").replace("```", "").strip()
                 data = json.loads(text_resp)
@@ -175,17 +170,27 @@ def main(page: ft.Page):
                 files_table.rows[index].cells[1].content = ft.Text("Embedding...", color=ft.Colors.BLUE)
                 page.update()
                 
-                # 3. Embed Metadata ke file yang ada di FOLDER DOWNLOAD
-                if embed_metadata_hardcore(final_path, title, keywords):
+                # STEP C: Embed Metadata di Folder TEMP (Aman dari permission error)
+                success, msg = embed_metadata_hardcore(work_path, title, keywords)
+                
+                if success:
+                    # STEP D: Jika sukses, baru COPY ke Folder Download (Public)
+                    final_path = os.path.join(final_output_folder, f"READY_{file_name}")
+                    shutil.copy(work_path, final_path)
+                    
                     files_table.rows[index].cells[1].content = ft.Text("Saved ✅", color=ft.Colors.GREEN)
                 else:
-                    files_table.rows[index].cells[1].content = ft.Text("Gagal ❌", color=ft.Colors.RED)
+                    files_table.rows[index].cells[1].content = ft.Text(f"Err: {msg}", color=ft.Colors.RED)
 
+                # Bersihkan file temp
+                if os.path.exists(work_path):
+                    os.remove(work_path)
+                    
                 time.sleep(1.0) 
 
             except Exception as err:
                 print(f"Error: {err}")
-                files_table.rows[index].cells[1].content = ft.Text(f"Error ❌", color=ft.Colors.RED)
+                files_table.rows[index].cells[1].content = ft.Text("Fail ❌", color=ft.Colors.RED)
             
             progress_bar.value = (index + 1) / total_files
             page.update()
@@ -223,8 +228,8 @@ def main(page: ft.Page):
     )
 
     btn_process = ft.ElevatedButton(
-        "Mulai & Simpan",
-        icon=ft.Icons.SAVE_ALT,
+        "Mulai Proses",
+        icon=ft.Icons.AUTO_FIX_HIGH,
         style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
         disabled=True,
         on_click=process_queue
@@ -242,7 +247,7 @@ def main(page: ft.Page):
     page.add(
         ft.Column([
             ft.Text("Stock AI Metadata Generator", size=24, weight=ft.FontWeight.BOLD),
-            ft.Text("Hasil akan disimpan di folder Downloads/Stock_AI_Result", size=12, color=ft.Colors.RED),
+            ft.Text("Hasil tersimpan di Internal > Download > Stock_AI_Result", size=12, color=ft.Colors.RED),
             ft.Divider(),
             api_key_field,
             ft.Container(height=10),
