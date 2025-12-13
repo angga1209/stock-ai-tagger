@@ -1,10 +1,6 @@
 import flet as ft
-import google.generativeai as genai
-import PIL.Image
 import json
 import os
-import piexif
-from iptcinfo3 import IPTCInfo
 import time
 import shutil
 import tempfile
@@ -12,12 +8,11 @@ import re
 import asyncio
 import itertools
 
-# --- CLASS MANAGER API KEY (WORKER ROTATION) ---
+# --- CLASS MANAGER API KEY ---
 class KeyManager:
     def __init__(self, keys_str):
-        # Bersihkan spasi dan pisahkan koma
         self.keys = [k.strip() for k in keys_str.split(',') if k.strip()]
-        self.iterator = itertools.cycle(self.keys) # Putar terus tanpa henti
+        self.iterator = itertools.cycle(self.keys)
         self.current_key = next(self.iterator) if self.keys else None
 
     def get_next(self):
@@ -33,15 +28,12 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.ADAPTIVE
     page.padding = 20
-    
-    # Mencegah layar mati (Wakelock simulation) - Penting untuk "Background" process
     page.window_prevent_close = True 
 
     selected_files = [] 
-    is_processing = False # Flag untuk stop process
+    is_processing = False 
 
     # --- UI Components ---
-    # Load API Key dari penyimpanan HP
     saved_keys = page.client_storage.get("gemini_api_keys")
     
     api_key_field = ft.TextField(
@@ -70,9 +62,10 @@ def main(page: ft.Page):
 
     # --- PATH UTILITIES ---
     def get_download_path():
+        # Android path fallback
         return "/storage/emulated/0/Download"
 
-    # --- HELPER FUNCTIONS (Tetap berjalan di thread terpisah) ---
+    # --- HELPER FUNCTIONS ---
     def extract_json(text):
         try:
             match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -81,6 +74,8 @@ def main(page: ft.Page):
         return None
 
     def sanitize_image_sync(input_path, output_path):
+        # LAZY IMPORT: Hanya diload saat membersihkan gambar
+        import PIL.Image
         try:
             img = PIL.Image.open(input_path)
             img = img.convert('RGB')
@@ -91,6 +86,10 @@ def main(page: ft.Page):
             return False
 
     def embed_metadata_strict_sync(work_path, title, keywords_str):
+        # LAZY IMPORT: Hanya diload saat menyimpan metadata
+        import piexif
+        from iptcinfo3 import IPTCInfo
+
         try:
             keyword_list = [k.strip() for k in keywords_str.split(',')]
             
@@ -106,6 +105,8 @@ def main(page: ft.Page):
             
             # IPTC
             info = IPTCInfo(work_path, force=True)
+            # Fix Encoding issue
+            info.set_encoding('utf-8') 
             info['keywords'] = keyword_list
             info['caption/abstract'] = title 
             info['object name'] = title
@@ -119,6 +120,12 @@ def main(page: ft.Page):
 
     # --- CORE PROCESS (ASYNC) ---
     async def process_queue(e):
+        # LAZY IMPORT: Library TERBERAT ditaruh di sini
+        # Agar aplikasi cepat terbuka di awal
+        import google.generativeai as genai
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold
+        import PIL.Image
+
         nonlocal is_processing
         
         if not api_key_field.value:
@@ -128,95 +135,103 @@ def main(page: ft.Page):
         if not selected_files:
             return
 
-        # Setup UI
         is_processing = True
         btn_process.disabled = True
-        btn_stop.disabled = False # Enable tombol stop
+        btn_stop.disabled = False
         progress_bar.visible = True
         page.update()
         
-        # Setup Folder
         download_folder = get_download_path()
         final_output_folder = os.path.join(download_folder, "Stock_AI_Result")
         os.makedirs(final_output_folder, exist_ok=True)
         
-        # Setup Keys Manager
         key_manager = KeyManager(api_key_field.value)
         temp_dir = tempfile.gettempdir()
-        
         total_files = len(selected_files)
         
         for index, file in enumerate(selected_files):
-            if not is_processing: # Cek tombol stop
+            if not is_processing: 
                 break
 
             file_name = file.name
             final_path = os.path.join(final_output_folder, f"READY_{file_name}")
 
-            # --- FITUR BATCH RESUME ---
-            # Jika file sudah ada di folder tujuan, Skip!
             if os.path.exists(final_path):
                 files_table.rows[index].cells[1].content = ft.Text("Skipped (Done)", color=ft.Colors.GREY)
                 progress_bar.value = (index + 1) / total_files
                 page.update()
                 continue
 
-            # Update UI Progress
             files_table.rows[index].cells[1].content = ft.Text("Cleaning...", color=ft.Colors.ORANGE)
             page.update()
             
-            # Beri jeda kecil agar UI 'bernafas' (tidak freeze)
             await asyncio.sleep(0.1)
 
             work_path = os.path.join(temp_dir, f"TEMP_{int(time.time())}_{file_name}")
 
             try:
-                # 1. Sanitize (Jalankan di Thread terpisah agar UI tidak macet)
                 is_clean = await asyncio.to_thread(sanitize_image_sync, file.path, work_path)
                 if not is_clean: raise Exception("File Corrupt")
 
-                # 2. AI Generator dengan Logic Retry & Rotate Key
                 files_table.rows[index].cells[1].content = ft.Text("AI Generating...", color=ft.Colors.BLUE)
                 page.update()
 
                 img = PIL.Image.open(work_path)
                 
-                # Logic Retry Max 3x jika kena limit
                 max_retries = 3
                 ai_success = False
                 
                 for attempt in range(max_retries):
                     current_key = key_manager.get_current()
                     genai.configure(api_key=current_key)
-                    model = genai.GenerativeModel('gemini-2.5-flash')
+                    
+                    # SAFETY SETTINGS: Agar gambar orang/kulit tidak diblokir
+                    safety_config = {
+                        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                    }
+
+                    # MODEL FIX: Menggunakan 1.5-flash (2.5 belum stabil/publik)
+                    model = genai.GenerativeModel(
+                        'gemini-2.5-flash', 
+                        safety_settings=safety_config
+                    )
                     
                     try:
                         prompt = """
-                        Act as a professional Stock Photography SEO Expert. Analyze the provided image to generate metadata optimized for Adobe Stock and Shutterstock algorithms.
+                                Act as a professional Stock Photography SEO Expert. Analyze the provided image to generate metadata optimized for Adobe Stock and Shutterstock algorithms.
+
+                                Your output must be strictly in JSON format with two fields: "title" and "keywords".
+
+                                Follow these rules:
+                                1. TITLE (Max 200 chars):
+                                   - Structure: [Main Subject] + [Action/State] + [Context/Background].
+                                   - Example: "Happy business woman using laptop in modern office near window"
+                                   - Focus on "Findability". The first 5 words are the most important.
+                                
+                                2. KEYWORDS (Target 50 words):
+                                   - Generate extensive tags separated by commas.
+                                   - HIERARCHY IS CRITICAL:
+                                     * 1-10: Main Subject, Primary Action, Key Objects (Visuals).
+                                     * 11-30: Conceptual, Mood, Lighting, Style (e.g., cinematic, bright, minimalism).
+                                     * 31-50: Broader categories and associations.
+                                   - Use lowercase only.
+                                   - Include specific visual descriptors (colors, materials, age, ethnicity if humans).
+                                
+                                3. RESTRICTIONS:
+                                   - NO Trademarked names (e.g., no 'iPhone', use 'smartphone').
+                                   - NO Brand logos.
+                                   - NO Celebrity names.
+
+                                Output structure example:
+                                {
+                                  "title": "A concise description of the image",
+                                  "keywords": "keyword1, keyword2, keyword3, ..."
+                                }
+                                """
                         
-                        Your output must be strictly in JSON format with two fields: "title" and "keywords".
-                        
-                        Follow these rules:
-                        1. TITLE:
-                           - Create a descriptive, natural sentence (max 15 words).
-                           - Focus on the subject, action, and context.
-                           - Do NOT use ID numbers or filler words.
-                        
-                        2. KEYWORDS:
-                           - Generate exactly 40-50 keywords.
-                           - Order is CRITICAL: Place the 7 most important visual keywords first (Subject, Action, Main Object), followed by conceptual keywords (Mood, Emotion, Business Concept), and finally technical details (Lighting, Viewpoint).
-                           - Separate keywords with commas.
-                           - All text must be in English.
-                           - STRICTLY NO TRADEMARKS, NO BRAND NAMES, and NO CELEBRITY NAMES.
-                        
-                        Output structure example:
-                        {
-                          "title": "A concise description of the image",
-                          "keywords": "keyword1, keyword2, keyword3, ..."
-                        }
-                        """
-                        
-                        # Request ke Google (Blocking IO, harus di thread)
                         response = await asyncio.to_thread(model.generate_content, [prompt, img])
                         
                         if not response.parts: raise Exception("Safety Block")
@@ -226,19 +241,17 @@ def main(page: ft.Page):
                             title = data.get("title", "")
                             keywords = data.get("keywords", "")
                             ai_success = True
-                            break # Sukses, keluar dari loop retry
+                            break 
                         else:
                             raise Exception("JSON Error")
 
                     except Exception as api_err:
                         err_msg = str(api_err)
-                        # Jika Error Quota (429), ganti kunci!
                         if "429" in err_msg or "ResourceExhausted" in err_msg:
                             new_key = key_manager.get_next()
                             print(f"Switching Key due to limit...")
-                            await asyncio.sleep(1) # Tunggu sebentar sebelum ganti
+                            await asyncio.sleep(1) 
                         else:
-                            # Error lain (Safety/Network), jangan retry
                             raise api_err
                 
                 img.close()
@@ -246,7 +259,6 @@ def main(page: ft.Page):
                 if not ai_success:
                     raise Exception("AI Failed/Limit")
 
-                # 3. Embedding
                 files_table.rows[index].cells[1].content = ft.Text("Saving...", color=ft.Colors.PURPLE)
                 page.update()
                 
@@ -261,7 +273,6 @@ def main(page: ft.Page):
             except Exception as e:
                 files_table.rows[index].cells[1].content = ft.Text("Error ❌", color=ft.Colors.RED, tooltip=str(e))
             
-            # Cleanup Temp
             if os.path.exists(work_path):
                 try: os.remove(work_path)
                 except: pass
@@ -269,7 +280,6 @@ def main(page: ft.Page):
             progress_bar.value = (index + 1) / total_files
             page.update()
 
-        # Finalisasi
         status_text.value = "Proses Selesai." if is_processing else "Proses Dihentikan."
         progress_bar.visible = False
         btn_process.disabled = False
