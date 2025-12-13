@@ -25,20 +25,22 @@ class KeyManager:
         return self.current_key
 
 def main(page: ft.Page):
-    page.title = "Ai Metadata Pro (Debug Mode)"
+    page.title = "Ai Metadata Pro (Fixed)"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.ADAPTIVE
     page.padding = 20
-    # Mencegah layar mati saat proses
     page.window_prevent_close = True 
 
     selected_files = [] 
     is_processing = False 
     processed_count = 0 
     
-    # Default Output Path (Android Download Folder)
-    # NOTE: Android 11+ butuh izin "Manage All Files" atau user memilih folder manual
+    # OUTPUT PATH
+    # Jika di Android 11+, path ini mungkin butuh izin khusus atau user harus pilih folder manual.
+    # Namun kita coba default ke Download dulu.
     DEFAULT_OUTPUT_DIR = "/storage/emulated/0/Download/Stock_AI_Result"
+    # DEFAULT_OUTPUT_DIR = "C:/Users/User/Downloads/temp/video"
+    
 
     # --- UI Components ---
     saved_keys = page.client_storage.get("gemini_api_keys")
@@ -75,19 +77,17 @@ def main(page: ft.Page):
 
     # --- DEBUG UTILS ---
     def show_error_snack(message):
-        """Menampilkan error detail di layar HP"""
         page.snack_bar = ft.SnackBar(
             content=ft.Text(f"ERROR: {message}", color=ft.Colors.WHITE),
             bgcolor=ft.Colors.RED_700,
-            duration=5000, # Tampil 5 detik
+            duration=5000,
             show_close_icon=True
         )
         page.snack_bar.open = True
         page.update()
 
-    # --- PERMISSION & STORAGE CHECKER ---
+    # --- PERMISSION CHECKER ---
     def check_storage_permission():
-        """Mencoba menulis file dummy untuk cek izin"""
         test_path = os.path.join(DEFAULT_OUTPUT_DIR, "permission_test.txt")
         try:
             os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
@@ -96,19 +96,17 @@ def main(page: ft.Page):
             os.remove(test_path)
             return True, "Storage OK"
         except PermissionError:
-            return False, "IZIN DITOLAK! Buka Pengaturan HP > Apps > Cari App Ini > Permissions > Izinkan Storage/Files."
+            return False, "IZIN DITOLAK! Buka Pengaturan HP > Apps > App Ini > Permissions > Allow Storage."
         except OSError as e:
             return False, f"OS Error: {str(e)}"
         except Exception as e:
             return False, f"Unknown Error: {str(e)}"
 
-    # Cek Izin saat Aplikasi Dibuka
     has_permission, perm_msg = check_storage_permission()
     if not has_permission:
-        # Tampilkan Dialog Peringatan Besar
         page.dialog = ft.AlertDialog(
-            title=ft.Text("Masalah Izin Penyimpanan ⚠️"),
-            content=ft.Text(f"{perm_msg}\n\nAplikasi tidak bisa menyimpan hasil jika izin tidak diberikan."),
+            title=ft.Text("Izin Penyimpanan Diperlukan"),
+            content=ft.Text(f"{perm_msg}\n\nAplikasi butuh izin untuk menyimpan hasil ke folder Download."),
             actions=[ft.TextButton("Saya Mengerti", on_click=lambda e: page.close_dialog())],
         )
         page.open_dialog = True
@@ -127,43 +125,57 @@ def main(page: ft.Page):
         try:
             img = PIL.Image.open(input_path)
             img = img.convert('RGB')
+            # Save High Quality for Final Result
             img.save(output_path, "JPEG", quality=100, optimize=True)
             img.close()
             return True
         except Exception as e:
-            raise e # Lempar error agar tertangkap debug
+            raise e 
 
     def embed_metadata_strict_sync(work_path, title, keywords_str):
+        # LAZY IMPORT
         import piexif
         from iptcinfo3 import IPTCInfo
+        
         try:
             keyword_list = [k.strip() for k in keywords_str.split(',')]
             
-            # EXIF
-            try: exif_dict = piexif.load(work_path)
-            except: exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+            # --- 1. EXIF Embedding (Modern) ---
+            try: 
+                exif_dict = piexif.load(work_path)
+            except: 
+                exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
             
+            # Windows/Adobe Title & Keywords (XPTags)
             exif_dict["0th"][piexif.ImageIFD.ImageDescription] = title.encode('utf-8')
             exif_dict["0th"][piexif.ImageIFD.XPTitle] = title.encode('utf-16le')
             xp_keywords = ";".join(keyword_list)
             exif_dict["0th"][piexif.ImageIFD.XPKeywords] = xp_keywords.encode('utf-16le')
+            
             piexif.insert(piexif.dump(exif_dict), work_path)
             
-            # IPTC
+            # --- 2. IPTC Embedding (Legacy/Standard) ---
+            # FIX: Hapus set_encoding karena tidak ada di library iptcinfo3
             info = IPTCInfo(work_path, force=True)
-            info.set_encoding('utf-8') 
+            
+            # IPTC butuh list of strings. Python 3 string is Unicode by default.
             info['keywords'] = keyword_list
             info['caption/abstract'] = title 
             info['object name'] = title
             info['headline'] = title
+            
+            # Simpan file. IPTCInfo biasanya membuat file baru dan memberi nama file lama dengan akhiran ~
             info.save() 
             
-            if os.path.exists(work_path + "~"): os.remove(work_path + "~")
+            # Hapus file backup otomatis yang dibuat iptcinfo3 (file berakhiran ~)
+            if os.path.exists(work_path + "~"):
+                os.remove(work_path + "~")
+                
             return True, "Complete"
         except Exception as e:
             return False, str(e)
 
-    # --- WORKER ---
+    # --- ASYNC WORKER ---
     async def process_single_image(index, file, key_manager, final_output_folder, temp_dir, semaphore):
         import google.generativeai as genai
         from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -177,7 +189,7 @@ def main(page: ft.Page):
             file_name = file.name
             final_path = os.path.join(final_output_folder, f"READY_{file_name}")
 
-            # 1. Skip Check
+            # Skip Logic
             if os.path.exists(final_path):
                 files_table.rows[index].cells[1].content = ft.Text("Skipped (Exists)", color=ft.Colors.GREY)
                 files_table.update()
@@ -186,20 +198,20 @@ def main(page: ft.Page):
                 progress_bar.update()
                 return
 
-            # 2. Cleaning
+            # Cleaning
             files_table.rows[index].cells[1].content = ft.Text("Cleaning...", color=ft.Colors.ORANGE)
             files_table.update()
 
             work_path = os.path.join(temp_dir, f"TEMP_{int(time.time())}_{index}_{file_name}")
 
             try:
-                # Coba sanitize
+                # Sanitize Image (Save to Temp Disk)
                 await asyncio.to_thread(sanitize_image_sync, file.path, work_path)
 
                 files_table.rows[index].cells[1].content = ft.Text("AI Generating...", color=ft.Colors.BLUE)
                 files_table.update()
 
-                # Prepare Image In-Memory
+                # Prepare In-Memory Image for AI (Downscaled)
                 img_bytes = None
                 def prepare_image_for_ai():
                     with PIL.Image.open(work_path) as img:
@@ -241,12 +253,12 @@ def main(page: ft.Page):
                                    - Example: "Happy business woman using laptop in modern office near window"
                                    - Focus on "Findability". The first 5 words are the most important.
                                 
-                                2. KEYWORDS (Target 50 words):
+                                2. KEYWORDS (Target 49 words):
                                    - Generate extensive tags separated by commas.
                                    - HIERARCHY IS CRITICAL:
                                      * 1-10: Main Subject, Primary Action, Key Objects (Visuals).
                                      * 11-30: Conceptual, Mood, Lighting, Style (e.g., cinematic, bright, minimalism).
-                                     * 31-50: Broader categories and associations.
+                                     * 31-49: Broader categories and associations.
                                    - Use lowercase only.
                                    - Include specific visual descriptors (colors, materials, age, ethnicity if humans).
                                 
@@ -280,43 +292,41 @@ def main(page: ft.Page):
 
                     except Exception as api_err:
                         err_msg = str(api_err)
-                        # Jika 400 (Bad Request) biasanya API KEY SALAH
                         if "400" in err_msg:
                             show_error_snack(f"API Key Invalid: {current_key[:10]}...")
                             break 
-                        
                         if "429" in err_msg or "ResourceExhausted" in err_msg:
                             key_manager.get_next()
                             await asyncio.sleep(2) 
                         else:
-                            # Jika error aneh, throw
                             raise api_err
                 
-                if not ai_success: raise Exception("AI Failed (All Retries)")
+                if not ai_success: raise Exception("AI Failed (Limit/Block)")
 
-                # 3. Saving
+                # Metadata Embedding
                 files_table.rows[index].cells[1].content = ft.Text("Saving...", color=ft.Colors.PURPLE)
                 files_table.update()
                 
                 success, msg = await asyncio.to_thread(embed_metadata_strict_sync, work_path, title, keywords)
                 
                 if success:
-                    # Final Move (Critical Point for Permission)
                     shutil.move(work_path, final_path)
                     files_table.rows[index].cells[1].content = ft.Text("SUCCESS ✅", color=ft.Colors.GREEN)
                 else:
-                    raise Exception(f"Metadata Fail: {msg}")
+                    raise Exception(f"Meta Fail: {msg}")
 
             except Exception as e:
-                # --- TANGKAP ERROR DAN TAMPILKAN ---
                 err_str = str(e)
                 print(f"DEBUG: {err_str}")
                 
                 if "Permission" in err_str or "Access denied" in err_str:
                     err_str = "PERMISSION DENIED! Cek Izin App."
-                    show_error_snack(err_str) # Munculkan Snack Bar Merah
+                    show_error_snack(err_str)
+                elif "IPTC" in err_str:
+                    err_str = f"IPTC Error: {err_str}" # Debug khusus IPTC
                 
                 files_table.rows[index].cells[1].content = ft.Text("Fail ❌", color=ft.Colors.RED, tooltip=str(e))
+                if index == 0: show_error_snack(err_str)
             
             files_table.update()
             
@@ -328,7 +338,7 @@ def main(page: ft.Page):
             progress_bar.value = processed_count / len(selected_files)
             progress_bar.update()
 
-    # --- MAIN LOGIC ---
+    # --- MAIN TOGGLE ---
     async def toggle_process(e):
         nonlocal is_processing, processed_count
         
@@ -340,7 +350,6 @@ def main(page: ft.Page):
             show_error_snack("Masukkan API Key!")
             return
 
-        # Cek Permission Lagi sebelum mulai
         ok, msg = check_storage_permission()
         if not ok:
             show_error_snack(msg)
@@ -357,7 +366,7 @@ def main(page: ft.Page):
             progress_bar.visible = True
             progress_bar.value = 0
             progress_bar.update()
-            status_text.value = "Memulai worker..."
+            status_text.value = "Starting..."
             status_text.update()
 
             os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
@@ -425,8 +434,8 @@ def main(page: ft.Page):
 
     page.add(
         ft.Column([
-            ft.Text("Ai Metadata Pro (Debug)", size=24, weight=ft.FontWeight.BOLD),
-            ft.Text(f"Output: {DEFAULT_OUTPUT_DIR}", size=10, color=ft.Colors.GREY), # Info Path
+            ft.Text("Ai Metadata Pro (Fixed)", size=24, weight=ft.FontWeight.BOLD),
+            ft.Text(f"Output: {DEFAULT_OUTPUT_DIR}", size=10, color=ft.Colors.GREY),
             ft.Divider(),
             api_key_field,
             ft.Container(height=5),
