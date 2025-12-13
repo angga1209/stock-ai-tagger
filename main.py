@@ -7,6 +7,7 @@ import tempfile
 import re
 import asyncio
 import itertools
+import io # Penting untuk In-Memory processing
 
 # --- CLASS MANAGER API KEY ---
 class KeyManager:
@@ -24,7 +25,7 @@ class KeyManager:
         return self.current_key
 
 def main(page: ft.Page):
-    page.title = "Ai Metadata Generator Pro"
+    page.title = "Ai Metadata Pro (Optimized)"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.ADAPTIVE
     page.padding = 20
@@ -32,6 +33,9 @@ def main(page: ft.Page):
 
     selected_files = [] 
     is_processing = False 
+    
+    # Counter untuk progress bar saat parallel
+    processed_count = 0 
 
     # --- UI Components ---
     saved_keys = page.client_storage.get("gemini_api_keys")
@@ -45,6 +49,13 @@ def main(page: ft.Page):
         value=saved_keys if saved_keys else "",
         border_color=ft.Colors.BLUE,
         on_change=lambda e: page.client_storage.set("gemini_api_keys", api_key_field.value)
+    )
+
+    # Checkbox Turbo Mode
+    chk_turbo = ft.Checkbox(
+        label="Turbo Mode (Parallel Processing)", 
+        value=False,
+        tooltip="Memproses 2 gambar sekaligus. Butuh RAM lebih besar."
     )
 
     files_table = ft.DataTable(
@@ -62,23 +73,24 @@ def main(page: ft.Page):
 
     # --- PATH UTILITIES ---
     def get_download_path():
-        # Android path fallback
         return "/storage/emulated/0/Download"
 
     # --- HELPER FUNCTIONS ---
     def extract_json(text):
         try:
+            # Bersihkan markdown jika AI bandel
+            text = text.replace("```json", "").replace("```", "").strip()
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if match: return json.loads(match.group())
         except: pass
         return None
 
     def sanitize_image_sync(input_path, output_path):
-        # LAZY IMPORT: Hanya diload saat membersihkan gambar
         import PIL.Image
         try:
             img = PIL.Image.open(input_path)
             img = img.convert('RGB')
+            # Kita simpan full resolution ke disk untuk hasil akhir
             img.save(output_path, "JPEG", quality=100, optimize=True)
             img.close()
             return True
@@ -86,10 +98,8 @@ def main(page: ft.Page):
             return False
 
     def embed_metadata_strict_sync(work_path, title, keywords_str):
-        # LAZY IMPORT: Hanya diload saat menyimpan metadata
         import piexif
         from iptcinfo3 import IPTCInfo
-
         try:
             keyword_list = [k.strip() for k in keywords_str.split(',')]
             
@@ -105,7 +115,6 @@ def main(page: ft.Page):
             
             # IPTC
             info = IPTCInfo(work_path, force=True)
-            # Fix Encoding issue
             info.set_encoding('utf-8') 
             info['keywords'] = keyword_list
             info['caption/abstract'] = title 
@@ -118,86 +127,77 @@ def main(page: ft.Page):
         except Exception as e:
             return False, str(e)
 
-    # --- CORE PROCESS (ASYNC) ---
-    async def process_queue(e):
-        # LAZY IMPORT: Library TERBERAT ditaruh di sini
-        # Agar aplikasi cepat terbuka di awal
+    # --- CORE WORKER (SINGLE IMAGE PROCESSOR) ---
+    async def process_single_image(index, file, key_manager, final_output_folder, temp_dir, semaphore):
+        # Lazy Import
         import google.generativeai as genai
         from google.generativeai.types import HarmCategory, HarmBlockThreshold
         import PIL.Image
 
-        nonlocal is_processing
+        nonlocal processed_count
         
-        if not api_key_field.value:
-            page.show_snack_bar(ft.SnackBar(ft.Text("Masukkan API Key!")))
-            return
-        
-        if not selected_files:
-            return
-
-        is_processing = True
-        btn_process.disabled = True
-        btn_stop.disabled = False
-        progress_bar.visible = True
-        page.update()
-        
-        download_folder = get_download_path()
-        final_output_folder = os.path.join(download_folder, "Stock_AI_Result")
-        os.makedirs(final_output_folder, exist_ok=True)
-        
-        key_manager = KeyManager(api_key_field.value)
-        temp_dir = tempfile.gettempdir()
-        total_files = len(selected_files)
-        
-        for index, file in enumerate(selected_files):
-            if not is_processing: 
-                break
+        # Gunakan Semaphore untuk membatasi jumlah parallel
+        async with semaphore:
+            if not is_processing: return # Cek jika user stop
 
             file_name = file.name
             final_path = os.path.join(final_output_folder, f"READY_{file_name}")
 
+            # 1. Skip jika sudah ada
             if os.path.exists(final_path):
                 files_table.rows[index].cells[1].content = ft.Text("Skipped (Done)", color=ft.Colors.GREY)
-                progress_bar.value = (index + 1) / total_files
-                page.update()
-                continue
+                files_table.update() # Partial Update
+                
+                processed_count += 1
+                progress_bar.value = processed_count / len(selected_files)
+                progress_bar.update() # Partial Update
+                return
 
+            # 2. Update Status Cleaning
             files_table.rows[index].cells[1].content = ft.Text("Cleaning...", color=ft.Colors.ORANGE)
-            page.update()
-            
-            await asyncio.sleep(0.1)
+            files_table.update()
 
-            work_path = os.path.join(temp_dir, f"TEMP_{int(time.time())}_{file_name}")
+            work_path = os.path.join(temp_dir, f"TEMP_{int(time.time())}_{index}_{file_name}")
 
             try:
+                # Sanitize (Disk I/O)
                 is_clean = await asyncio.to_thread(sanitize_image_sync, file.path, work_path)
                 if not is_clean: raise Exception("File Corrupt")
 
                 files_table.rows[index].cells[1].content = ft.Text("AI Generating...", color=ft.Colors.BLUE)
-                page.update()
+                files_table.update()
 
-                img = PIL.Image.open(work_path)
+                # --- OPTIMASI IN-MEMORY & DOWNSCALE ---
+                # Baca file temp, kecilkan di RAM, kirim bytes ke AI
+                # Ini menghemat bandwidth upload ke Gemini
+                img_bytes = None
+                def prepare_image_for_ai():
+                    with PIL.Image.open(work_path) as img:
+                        img.thumbnail((1024, 1024)) # Resize max 1024px
+                        buf = io.BytesIO()
+                        img.save(buf, format='JPEG', quality=80)
+                        return buf.getvalue()
                 
+                img_bytes = await asyncio.to_thread(prepare_image_for_ai)
+
+                # AI Process
                 max_retries = 3
                 ai_success = False
+                title, keywords = "", ""
                 
                 for attempt in range(max_retries):
+                    if not is_processing: break # Cek stop di tengah retry
+
                     current_key = key_manager.get_current()
                     genai.configure(api_key=current_key)
                     
-                    # SAFETY SETTINGS: Agar gambar orang/kulit tidak diblokir
                     safety_config = {
                         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
                         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                     }
-
-                    # MODEL FIX: Menggunakan 1.5-flash (2.5 belum stabil/publik)
-                    model = genai.GenerativeModel(
-                        'gemini-2.5-flash', 
-                        safety_settings=safety_config
-                    )
+                    model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_config)
                     
                     try:
                         prompt = """
@@ -232,7 +232,11 @@ def main(page: ft.Page):
                                 }
                                 """
                         
-                        response = await asyncio.to_thread(model.generate_content, [prompt, img])
+                        # Kirim BYTES langsung ke model (In-Memory)
+                        response = await asyncio.to_thread(
+                            model.generate_content, 
+                            [prompt, {"mime_type": "image/jpeg", "data": img_bytes}]
+                        )
                         
                         if not response.parts: raise Exception("Safety Block")
                         data = extract_json(response.text)
@@ -248,19 +252,17 @@ def main(page: ft.Page):
                     except Exception as api_err:
                         err_msg = str(api_err)
                         if "429" in err_msg or "ResourceExhausted" in err_msg:
-                            new_key = key_manager.get_next()
-                            print(f"Switching Key due to limit...")
+                            key_manager.get_next()
                             await asyncio.sleep(1) 
                         else:
-                            raise api_err
+                            # Jika error fatal, jangan retry
+                            break
                 
-                img.close()
+                if not ai_success: raise Exception("AI Failed/Limit")
 
-                if not ai_success:
-                    raise Exception("AI Failed/Limit")
-
+                # 3. Embedding (Disk I/O pada work_path)
                 files_table.rows[index].cells[1].content = ft.Text("Saving...", color=ft.Colors.PURPLE)
-                page.update()
+                files_table.update()
                 
                 success, msg = await asyncio.to_thread(embed_metadata_strict_sync, work_path, title, keywords)
                 
@@ -273,25 +275,96 @@ def main(page: ft.Page):
             except Exception as e:
                 files_table.rows[index].cells[1].content = ft.Text("Error ❌", color=ft.Colors.RED, tooltip=str(e))
             
+            files_table.update() # Partial Update akhir
+            
+            # Cleanup
             if os.path.exists(work_path):
                 try: os.remove(work_path)
                 except: pass
             
-            progress_bar.value = (index + 1) / total_files
-            page.update()
+            processed_count += 1
+            progress_bar.value = processed_count / len(selected_files)
+            progress_bar.update()
 
-        status_text.value = "Proses Selesai." if is_processing else "Proses Dihentikan."
-        progress_bar.visible = False
-        btn_process.disabled = False
-        btn_stop.disabled = True
-        is_processing = False
-        page.update()
+    # --- MAIN CONTROLLER ---
+    async def toggle_process(e):
+        nonlocal is_processing, processed_count
+        
+        if not selected_files:
+            page.show_snack_bar(ft.SnackBar(ft.Text("Pilih gambar dulu!")))
+            return
+        
+        if not api_key_field.value:
+            page.show_snack_bar(ft.SnackBar(ft.Text("Masukkan API Key!")))
+            return
 
-    def stop_process(e):
-        nonlocal is_processing
-        is_processing = False
-        status_text.value = "Menghentikan proses..."
-        page.update()
+        # --- TOMBOL START DITEKAN ---
+        if not is_processing:
+            is_processing = True
+            processed_count = 0
+            
+            # UI Changes
+            btn_action.text = "STOP PROSES"
+            btn_action.icon = ft.Icons.STOP_CIRCLE_OUTLINED
+            btn_action.bgcolor = ft.Colors.RED_600
+            btn_action.update() # Partial Update
+            
+            progress_bar.visible = True
+            progress_bar.value = 0
+            progress_bar.update()
+            
+            status_text.value = "Menyiapkan worker..."
+            status_text.update()
+
+            # Setup Environment
+            download_folder = get_download_path()
+            final_output_folder = os.path.join(download_folder, "Stock_AI_Result")
+            os.makedirs(final_output_folder, exist_ok=True)
+            key_manager = KeyManager(api_key_field.value)
+            temp_dir = tempfile.gettempdir()
+            
+            # --- PARALLEL LOGIC ---
+            # Tentukan jumlah worker berdasarkan checkbox
+            worker_limit = 2 if chk_turbo.value else 1
+            sem = asyncio.Semaphore(worker_limit)
+            
+            status_text.value = f"Memproses dengan {worker_limit} worker..."
+            status_text.update()
+
+            # Buat Task List
+            tasks = []
+            for index, file in enumerate(selected_files):
+                tasks.append(
+                    process_single_image(index, file, key_manager, final_output_folder, temp_dir, sem)
+                )
+            
+            # Jalankan semua task (Asyncio Gather)
+            await asyncio.gather(*tasks)
+
+            # Selesai Loop
+            is_processing = False
+            status_text.value = "Proses Selesai."
+            
+            # Reset UI
+            btn_action.text = "MULAI PROSES"
+            btn_action.icon = ft.Icons.ROCKET_LAUNCH
+            btn_action.bgcolor = ft.Colors.BLUE_700
+            btn_action.disabled = False
+            progress_bar.visible = False
+            
+            page.update() # Update final halaman
+
+        # --- TOMBOL STOP DITEKAN ---
+        else:
+            is_processing = False # Flag dimatikan, worker akan return early
+            btn_action.text = "MENGHENTIKAN..."
+            btn_action.bgcolor = ft.Colors.GREY
+            btn_action.disabled = True
+            btn_action.update()
+            status_text.value = "Menunggu worker berhenti..."
+            status_text.update()
+            # Tidak ada logic break manual disini karena asyncio.gather akan selesai 
+            # secara alami saat worker mendeteksi is_processing = False
 
     def on_files_picked(e: ft.FilePickerResultEvent):
         nonlocal selected_files
@@ -306,35 +379,52 @@ def main(page: ft.Page):
                     ])
                 )
             files_table.visible = True
-            btn_process.disabled = False
+            files_table.update()
+            
+            btn_action.disabled = False 
+            btn_action.update()
+            
             status_text.value = f"{len(selected_files)} gambar dipilih."
-            page.update()
+            status_text.update()
 
     file_picker = ft.FilePicker(on_result=on_files_picked)
     page.overlay.append(file_picker)
 
-    # --- Buttons ---
-    btn_pick = ft.ElevatedButton("Pilih Gambar", icon=ft.Icons.PHOTO_LIBRARY, on_click=lambda _: file_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.IMAGE))
+    # --- Buttons & UI Construction ---
+    btn_pick = ft.ElevatedButton(
+        "Pilih Gambar", 
+        icon=ft.Icons.PHOTO_LIBRARY, 
+        on_click=lambda _: file_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.IMAGE)
+    )
     
-    btn_process = ft.ElevatedButton("Mulai Proses (Pro Worker)", icon=ft.Icons.ROCKET_LAUNCH, style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE), disabled=True, on_click=process_queue)
-    
-    btn_stop = ft.ElevatedButton("Stop", icon=ft.Icons.STOP, bgcolor=ft.Colors.RED, color=ft.Colors.WHITE, disabled=True, on_click=stop_process)
+    btn_action = ft.ElevatedButton(
+        text="MULAI PROSES", 
+        icon=ft.Icons.ROCKET_LAUNCH, 
+        style=ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE_700, 
+            color=ft.Colors.WHITE,
+            shape=ft.RoundedRectangleBorder(radius=8),
+        ), 
+        disabled=True,
+        height=50,
+        on_click=toggle_process
+    )
 
-    # --- Layout ---
     page.add(
         ft.Column([
-            ft.Text("Ai Metadata Pro (Worker Mode)", size=24, weight=ft.FontWeight.BOLD),
-            ft.Text("Supports Multiple Keys & Resume Mode", size=12, color=ft.Colors.GREY),
+            ft.Text("Ai Metadata Pro (Optimized)", size=24, weight=ft.FontWeight.BOLD),
             ft.Divider(),
             api_key_field,
+            ft.Container(height=5),
+            chk_turbo, # Checkbox baru
             ft.Container(height=10),
-            ft.Row([btn_pick, btn_stop]),
+            ft.Row([btn_pick, ft.Container(expand=True)]),
+            ft.Container(height=10),
+            ft.Container(content=btn_action, width=float("inf")),
             ft.Container(height=10),
             files_table,
             progress_bar,
             status_text,
-            ft.Container(height=10),
-            btn_process,
         ], scroll=ft.ScrollMode.ADAPTIVE)
     )
 
