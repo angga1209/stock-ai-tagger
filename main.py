@@ -25,17 +25,16 @@ class KeyManager:
         return self.current_key
 
 def main(page: ft.Page):
-    page.title = "Ai Metadata Pro (Final)"
+    page.title = "Ai Metadata Pro"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.ADAPTIVE
-    page.padding = 15 # Padding sedikit dikecilkan agar muat di HP kecil
+    page.padding = 15
     page.window_prevent_close = True 
 
     selected_files = [] 
     is_processing = False 
     processed_count = 0 
     
-    # Path Default
     DEFAULT_OUTPUT_DIR = "/storage/emulated/0/Download/Stock_AI_Result"
 
     # --- UI Components ---
@@ -53,7 +52,6 @@ def main(page: ft.Page):
         on_change=lambda e: page.client_storage.set("gemini_api_keys", api_key_field.value)
     )
 
-    # Input Jumlah Worker (Pengganti Checkbox)
     txt_worker = ft.TextField(
         label="Jml Worker",
         value="1",
@@ -75,15 +73,17 @@ def main(page: ft.Page):
         column_spacing=20,
     )
     
-    status_text = ft.Text("Siap.", color=ft.Colors.GREY, size=12)
-    progress_bar = ft.ProgressBar(visible=False, value=0, color=ft.Colors.BLUE)
+    # STATUS TEXT & PROGRESS BAR (Definisi)
+    # Kita perbesar sedikit teksnya agar mudah dibaca
+    status_text = ft.Text("Siap Memproses.", color=ft.Colors.BLUE_GREY_900, size=14, weight=ft.FontWeight.BOLD)
+    progress_bar = ft.ProgressBar(visible=False, value=0, color=ft.Colors.BLUE_700, bgcolor=ft.Colors.BLUE_100)
 
     # --- EXTERNAL LINKS ---
     def open_wa(e):
-        page.launch_url("https://wa.me/6281229689225") # Ganti nomor WA Anda
+        page.launch_url("https://wa.me/6281229689225") 
     
     def open_tools(e):
-        page.launch_url("https://lynk.id/anggayulianto") # Ganti Link Lynk.id
+        page.launch_url("https://lynk.id/anggayulianto") 
 
     # --- UTILS ---
     def show_snack(message, color=ft.Colors.RED):
@@ -131,7 +131,6 @@ def main(page: ft.Page):
         try:
             keyword_list = [k.strip() for k in keywords_str.split(',')]
             
-            # EXIF
             try: exif_dict = piexif.load(work_path)
             except: exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
             
@@ -141,7 +140,6 @@ def main(page: ft.Page):
             exif_dict["0th"][piexif.ImageIFD.XPKeywords] = xp_keywords.encode('utf-16le')
             piexif.insert(piexif.dump(exif_dict), work_path)
             
-            # IPTC
             info = IPTCInfo(work_path, force=True)
             info['keywords'] = keyword_list
             info['caption/abstract'] = title 
@@ -168,7 +166,6 @@ def main(page: ft.Page):
             file_name = file.name
             final_path = os.path.join(final_output_folder, f"READY_{file_name}")
 
-            # Update status awal (Fast UI update)
             files_table.rows[index].cells[1].content = ft.Text("Cleaning...", color=ft.Colors.ORANGE)
             files_table.update()
 
@@ -188,7 +185,6 @@ def main(page: ft.Page):
                 files_table.rows[index].cells[1].content = ft.Text("Generating...", color=ft.Colors.BLUE)
                 files_table.update()
 
-                # In-Memory Image
                 img_bytes = None
                 def prepare_image():
                     with PIL.Image.open(work_path) as img:
@@ -199,7 +195,6 @@ def main(page: ft.Page):
                 
                 img_bytes = await asyncio.to_thread(prepare_image)
 
-                # AI Process
                 max_retries = 3
                 ai_success = False
                 title, keywords = "", ""
@@ -296,7 +291,6 @@ def main(page: ft.Page):
 
     # --- ACTIONS ---
     def clear_data(e):
-        """Membersihkan list tanpa hapus API Key"""
         nonlocal selected_files
         if is_processing:
             show_snack("Stop proses dulu!")
@@ -313,97 +307,79 @@ def main(page: ft.Page):
         progress_bar.value = 0
         progress_bar.visible = False
         progress_bar.update()
+        
+        reset_start_button()
 
-        btn_action.disabled = True
+    def reset_start_button():
         btn_action.text = "MULAI PROSES"
+        btn_action.icon = ft.Icons.ROCKET_LAUNCH
         btn_action.bgcolor = ft.Colors.BLUE_700
+        btn_action.disabled = False
         btn_action.update()
 
     async def toggle_process(e):
         nonlocal is_processing, processed_count
         
-        # 1. IMMEDIATE UI FEEDBACK (Agar user tidak merasa lag)
-        if not is_processing:
-            # STATE: STARTING
-            # Matikan tombol langsung agar tidak dipencet 2x
-            btn_action.disabled = True 
-            btn_action.text = "Menyiapkan..." 
-            btn_action.update()
-            
-            # --- Validasi Awal (Baru dijalankan setelah UI update) ---
-            if not selected_files:
-                show_snack("Pilih gambar dulu!")
-                # Reset tombol
-                btn_action.disabled = False
-                btn_action.text = "MULAI PROSES"
-                btn_action.update()
-                return
-            
-            if not api_key_field.value:
-                show_snack("Masukkan API Key!")
-                btn_action.disabled = False
-                btn_action.text = "MULAI PROSES"
-                btn_action.update()
-                return
-
-            ok, msg = check_storage_permission()
-            if not ok:
-                show_snack(msg)
-                btn_action.disabled = False
-                btn_action.text = "MULAI PROSES"
-                btn_action.update()
-                return
-
-            # --- SETUP PROCESS ---
-            is_processing = True
-            processed_count = 0
-            
-            # Update UI ke mode STOP
-            btn_action.text = "STOP PROSES"
-            btn_action.bgcolor = ft.Colors.RED_600
-            btn_action.icon = ft.Icons.STOP_CIRCLE
-            btn_action.disabled = False # Hidupkan lagi agar bisa distop
-            btn_action.update()
-            
-            progress_bar.visible = True
-            progress_bar.value = 0
-            progress_bar.update()
-            
-            os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
-            key_manager = KeyManager(api_key_field.value)
-            temp_dir = tempfile.gettempdir()
-            
-            # Ambil nilai worker dari textbox
-            try:
-                worker_limit = int(txt_worker.value)
-                if worker_limit < 1: worker_limit = 1
-            except: worker_limit = 1
-            
-            sem = asyncio.Semaphore(worker_limit)
-            status_text.value = f"Running ({worker_limit} worker)..."
-            status_text.update()
-            
-            # Execute
-            tasks = [process_single_image(i, f, key_manager, DEFAULT_OUTPUT_DIR, temp_dir, sem) for i, f in enumerate(selected_files)]
-            await asyncio.gather(*tasks)
-
-            # --- FINISHED ---
+        if is_processing:
             is_processing = False
-            status_text.value = "Selesai."
-            status_text.update()
-            
-            btn_action.text = "MULAI PROSES"
-            btn_action.bgcolor = ft.Colors.BLUE_700
-            btn_action.icon = ft.Icons.ROCKET_LAUNCH
-            btn_action.update()
-
-        else:
-            # STATE: STOPPING
-            is_processing = False
-            btn_action.text = "BERHENTI..."
-            btn_action.disabled = True # Disable sampai loop benar-benar berhenti
+            btn_action.text = "MENGHENTIKAN..."
+            btn_action.disabled = True
             btn_action.bgcolor = ft.Colors.GREY
             btn_action.update()
+            return
+
+        # ZERO LAG UI START
+        is_processing = True 
+        btn_action.text = "STOP PROSES"
+        btn_action.icon = ft.Icons.STOP_CIRCLE
+        btn_action.bgcolor = ft.Colors.RED_600
+        btn_action.update()
+        await asyncio.sleep(0.1)
+
+        if not selected_files:
+            show_snack("Pilih gambar dulu!")
+            is_processing = False
+            reset_start_button()
+            return
+        
+        if not api_key_field.value:
+            show_snack("Masukkan API Key!")
+            is_processing = False
+            reset_start_button()
+            return
+
+        ok, msg = check_storage_permission()
+        if not ok:
+            show_snack(msg)
+            is_processing = False
+            reset_start_button()
+            return
+
+        processed_count = 0
+        progress_bar.visible = True
+        progress_bar.value = 0
+        progress_bar.update()
+        
+        os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+        key_manager = KeyManager(api_key_field.value)
+        temp_dir = tempfile.gettempdir()
+        
+        try:
+            worker_limit = int(txt_worker.value)
+            if worker_limit < 1: worker_limit = 1
+        except: worker_limit = 1
+        
+        sem = asyncio.Semaphore(worker_limit)
+        status_text.value = f"Memproses {len(selected_files)} gambar..."
+        status_text.update()
+        
+        tasks = [process_single_image(i, f, key_manager, DEFAULT_OUTPUT_DIR, temp_dir, sem) for i, f in enumerate(selected_files)]
+        await asyncio.gather(*tasks)
+
+        is_processing = False
+        status_text.value = "Semua Selesai."
+        status_text.update()
+        reset_start_button()
 
     def on_files_picked(e: ft.FilePickerResultEvent):
         nonlocal selected_files
@@ -416,7 +392,7 @@ def main(page: ft.Page):
             files_table.update()
             btn_action.disabled = False 
             btn_action.update()
-            status_text.value = f"{len(selected_files)} gambar."
+            status_text.value = f"{len(selected_files)} gambar siap."
             status_text.update()
 
     file_picker = ft.FilePicker(on_result=on_files_picked)
@@ -435,37 +411,53 @@ def main(page: ft.Page):
         on_click=toggle_process
     )
     
-    # Menu Bantuan (Baris Bawah)
     btn_help = ft.TextButton("Bantuan (WA)", icon=ft.Icons.CHAT, on_click=open_wa)
     btn_tools = ft.TextButton("Tools Lainnya", icon=ft.Icons.LINK, on_click=open_tools)
 
+    # --- CONTAINER UTAMA ---
     page.add(
         ft.Column([
             ft.Text("Ai Metadata Pro", size=20, weight=ft.FontWeight.BOLD),
             api_key_field,
             ft.Container(height=5),
             
-            # Row Setting Worker
             ft.Row([
                 txt_worker,
-                ft.Text("Set worker ke 2 jika HP RAM > 6GB.\nJika sering crash, set ke 1.", size=10, color=ft.Colors.GREY, expand=True)
+                ft.Text("Rekomendasi worker: 1\n(Agar HP tidak panas)", size=10, color=ft.Colors.GREY, expand=True)
             ], alignment=ft.MainAxisAlignment.START),
             
             ft.Divider(),
             
-            # Row Tombol Navigasi
             ft.Row([btn_pick, btn_clear]),
-            
             ft.Container(height=5),
+            
+            # Tombol Mulai
             ft.Container(content=btn_action, width=float("inf")),
+            ft.Container(height=10),
+
+            # --- BAGIAN INI DIPINDAH KE ATAS ---
+            # Kotak Status Dashboard
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=ft.Colors.BLUE_700),
+                        status_text
+                    ]),
+                    progress_bar,
+                ], spacing=5),
+                bgcolor=ft.Colors.BLUE_50, # Background Biru Muda biar jelas
+                padding=10,
+                border_radius=10,
+                border=ft.border.all(1, ft.Colors.BLUE_100)
+            ),
+            # -----------------------------------
             
             ft.Container(height=10),
+            
+            # Tabel Gambar ada di bawah Status
             files_table,
-            progress_bar,
-            status_text,
             
             ft.Divider(),
-            # Footer Links
             ft.Row([btn_help, btn_tools], alignment=ft.MainAxisAlignment.CENTER),
             
         ], scroll=ft.ScrollMode.ADAPTIVE)
