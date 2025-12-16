@@ -1,385 +1,155 @@
 import flet as ft
+import google.generativeai as genai
+import PIL.Image
 import json
 import os
+import piexif
+from iptcinfo3 import IPTCInfo
 import time
-import shutil
-import tempfile
-import re
-import asyncio
-import itertools
-import io 
-
-# --- CLASS MANAGER API KEY ---
-class KeyManager:
-    def __init__(self, keys_str):
-        self.keys = [k.strip() for k in keys_str.split(',') if k.strip()]
-        self.iterator = itertools.cycle(self.keys)
-        self.current_key = next(self.iterator) if self.keys else None
-
-    def get_next(self):
-        if not self.keys: return None
-        self.current_key = next(self.iterator)
-        return self.current_key
-    
-    def get_current(self):
-        return self.current_key
 
 def main(page: ft.Page):
-    page.title = "Ai Metadata Pro"
+    page.title = "Stock AI Metadata Generator"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.ADAPTIVE
-    page.padding = 15
-    page.window_prevent_close = True 
+    page.padding = 20
+    SUPPORT_URL = "https://wa.me/6281229689225" 
 
     selected_files = [] 
-    is_processing = False 
-    processed_count = 0 
     
-    DEFAULT_OUTPUT_DIR = "/storage/emulated/0/Download/Stock_AI_Result"
-
     # --- UI Components ---
-    saved_keys = page.client_storage.get("gemini_api_keys")
     
     api_key_field = ft.TextField(
-        label="Gemini API Keys",
-        hint_text="Paste Key disini (pisahkan koma)...",
-        multiline=True,
-        min_lines=1,
-        max_lines=3,
-        text_size=12,
-        value=saved_keys if saved_keys else "",
-        border_color=ft.Colors.BLUE,
-        on_change=lambda e: page.client_storage.set("gemini_api_keys", api_key_field.value)
-    )
-
-    txt_worker = ft.TextField(
-        label="Jml Worker",
-        value="1",
-        text_align=ft.TextAlign.CENTER,
-        width=100,
-        keyboard_type=ft.KeyboardType.NUMBER,
-        hint_text="Max 2",
-        helper_text="Rekomendasi: 1-2"
+        label="Gemini API Key",
+        password=True,
+        can_reveal_password=True, 
+        border_color=ft.Colors.BLUE
     )
 
     files_table = ft.DataTable(
         columns=[
-            ft.DataColumn(ft.Text("File")),
+            ft.DataColumn(ft.Text("File Name")),
             ft.DataColumn(ft.Text("Status")),
         ],
         rows=[],
         visible=False,
-        width=float("inf"),
-        column_spacing=20,
+        width=float("inf") 
     )
     
-    # STATUS TEXT & PROGRESS BAR (Definisi)
-    # Kita perbesar sedikit teksnya agar mudah dibaca
-    status_text = ft.Text("Siap Memproses.", color=ft.Colors.BLUE_GREY_900, size=14, weight=ft.FontWeight.BOLD)
-    progress_bar = ft.ProgressBar(visible=False, value=0, color=ft.Colors.BLUE_700, bgcolor=ft.Colors.BLUE_100)
+    status_text = ft.Text("Siap memilih gambar.", color=ft.Colors.GREY)
+    progress_bar = ft.ProgressBar(visible=False, value=0)
 
-    # --- EXTERNAL LINKS ---
-    def open_wa(e):
-        page.launch_url("https://wa.me/6281229689225") 
-    
-    def open_tools(e):
-        page.launch_url("https://lynk.id/anggayulianto") 
-
-    # --- UTILS ---
-    def show_snack(message, color=ft.Colors.RED):
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text(message, color=ft.Colors.WHITE),
-            bgcolor=color,
-            duration=4000,
-        )
-        page.snack_bar.open = True
-        page.update()
-
-    def check_storage_permission():
-        test_path = os.path.join(DEFAULT_OUTPUT_DIR, "perm_test.tmp")
+    # --- FUNGSI INTI ---
+    def embed_metadata_hardcore(file_path, title, keywords_str):
         try:
-            os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
-            with open(test_path, "w") as f: f.write("ok")
-            os.remove(test_path)
-            return True, "OK"
-        except:
-            return False, "Izin Penyimpanan Ditolak! Cek Pengaturan HP."
-
-    # --- HELPER FUNCTIONS ---
-    def extract_json(text):
-        try:
-            text = text.replace("```json", "").replace("```", "").strip()
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match: return json.loads(match.group())
-        except: pass
-        return None
-
-    def sanitize_image_sync(input_path, output_path):
-        import PIL.Image
-        try:
-            img = PIL.Image.open(input_path)
-            img = img.convert('RGB')
-            img.save(output_path, "JPEG", quality=100, optimize=True)
-            img.close()
-            return True
-        except Exception as e:
-            raise e 
-
-    def embed_metadata_strict_sync(work_path, title, keywords_str):
-        import piexif
-        from iptcinfo3 import IPTCInfo
-        try:
-            keyword_list = [k.strip() for k in keywords_str.split(',')]
-            
-            try: exif_dict = piexif.load(work_path)
-            except: exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
-            
+            # 1. EXIF Title
+            exif_dict = piexif.load(file_path)
             exif_dict["0th"][piexif.ImageIFD.ImageDescription] = title.encode('utf-8')
             exif_dict["0th"][piexif.ImageIFD.XPTitle] = title.encode('utf-16le')
-            xp_keywords = ";".join(keyword_list)
-            exif_dict["0th"][piexif.ImageIFD.XPKeywords] = xp_keywords.encode('utf-16le')
-            piexif.insert(piexif.dump(exif_dict), work_path)
+            exif_bytes = piexif.dump(exif_dict)
+            piexif.insert(exif_bytes, file_path)
             
-            info = IPTCInfo(work_path, force=True)
+            time.sleep(0.5)
+
+            # 2. IPTC Keywords
+            info = IPTCInfo(file_path, force=True)
+            keyword_list = [k.strip() for k in keywords_str.split(',')]
             info['keywords'] = keyword_list
             info['caption/abstract'] = title 
-            info['object name'] = title
-            info['headline'] = title
-            info.save() 
-            
-            if os.path.exists(work_path + "~"): os.remove(work_path + "~")
-            return True, "Complete"
+            info.save()
+
+            # 3. Hapus Backup
+            backup_file = file_path + "~"
+            if os.path.exists(backup_file):
+                try: os.remove(backup_file)
+                except: pass
+            return True
         except Exception as e:
-            return False, str(e)
+            print(f"Error embedding: {e}")
+            return False
 
-    # --- WORKER ---
-    async def process_single_image(index, file, key_manager, final_output_folder, temp_dir, semaphore):
-        import google.generativeai as genai
-        from google.generativeai.types import HarmCategory, HarmBlockThreshold
-        import PIL.Image
-
-        nonlocal processed_count
+    def process_queue(e):
+        if not api_key_field.value:
+            page.show_snack_bar(ft.SnackBar(ft.Text("Masukkan API Key!")))
+            return
         
-        async with semaphore:
-            if not is_processing: return
+        if not selected_files:
+            return
 
+        btn_process.disabled = True
+        progress_bar.visible = True
+        
+        genai.configure(api_key=api_key_field.value)
+        model = genai.GenerativeModel('gemini-2.5-flash') 
+
+        total_files = len(selected_files)
+        
+        for index, file in enumerate(selected_files):
+            file_path = file.path
             file_name = file.name
-            final_path = os.path.join(final_output_folder, f"READY_{file_name}")
-
-            files_table.rows[index].cells[1].content = ft.Text("Cleaning...", color=ft.Colors.ORANGE)
-            files_table.update()
-
-            if os.path.exists(final_path):
-                files_table.rows[index].cells[1].content = ft.Text("Skip (Ada)", color=ft.Colors.GREY)
-                files_table.update()
-                processed_count += 1
-                progress_bar.value = processed_count / len(selected_files)
-                progress_bar.update()
-                return
-
-            work_path = os.path.join(temp_dir, f"TEMP_{int(time.time())}_{index}_{file_name}")
+            
+            files_table.rows[index].cells[1].content = ft.Text("AI Generating...", color=ft.Colors.ORANGE)
+            status_text.value = f"Processing {index+1}/{total_files}: {file_name}"
+            progress_bar.value = index / total_files
+            page.update()
 
             try:
-                await asyncio.to_thread(sanitize_image_sync, file.path, work_path)
-
-                files_table.rows[index].cells[1].content = ft.Text("Generating...", color=ft.Colors.BLUE)
-                files_table.update()
-
-                img_bytes = None
-                def prepare_image():
-                    with PIL.Image.open(work_path) as img:
-                        img.thumbnail((1024, 1024)) 
-                        buf = io.BytesIO()
-                        img.save(buf, format='JPEG', quality=80)
-                        return buf.getvalue()
+                img = PIL.Image.open(file_path)
                 
-                img_bytes = await asyncio.to_thread(prepare_image)
+                prompt = """
+                Act as a professional Stock Photography SEO Expert. Analyze the provided image to generate metadata optimized for Adobe Stock and Shutterstock algorithms.
 
-                max_retries = 3
-                ai_success = False
-                title, keywords = "", ""
+                Your output must be strictly in JSON format with two fields: "title" and "keywords".
+
+                Follow these rules:
+                1. TITLE:
+                   - Create a descriptive, natural sentence (max 15 words).
+                   - Focus on the subject, action, and context.
+                   - Do NOT use ID numbers or filler words.
+
+                2. KEYWORDS:
+                   - Generate exactly 40-50 keywords.
+                   - Order is CRITICAL: Place the 7 most important visual keywords first (Subject, Action, Main Object), followed by conceptual keywords (Mood, Emotion, Business Concept), and finally technical details (Lighting, Viewpoint).
+                   - Separate keywords with commas.
+                   - All text must be in English.
+                   - STRICTLY NO TRADEMARKS, NO BRAND NAMES, and NO CELEBRITY NAMES.
+
+                Output structure example:
+                {
+                  "title": "A concise description of the image",
+                  "keywords": "keyword1, keyword2, keyword3, ..."
+                }
+                """
                 
-                for attempt in range(max_retries):
-                    if not is_processing: break
-                    current_key = key_manager.get_current()
-                    
-                    try:
-                        genai.configure(api_key=current_key)
-                        safety = {HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
-                        model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
-                        
-                        prompt = """
-                                Act as a professional Stock Photography SEO Expert. Analyze the provided image to generate metadata optimized for Adobe Stock and Shutterstock algorithms.
-
-                                Your output must be strictly in JSON format with two fields: "title" and "keywords".
-
-                                Follow these rules:
-                                1. TITLE (Max 200 chars):
-                                   - Structure: [Main Subject] + [Action/State] + [Context/Background].
-                                   - Example: "Happy business woman using laptop in modern office near window"
-                                   - Focus on "Findability". The first 5 words are the most important.
-                                
-                                2. KEYWORDS (Target 49 words):
-                                   - Generate extensive tags separated by commas.
-                                   - HIERARCHY IS CRITICAL:
-                                     * 1-10: Main Subject, Primary Action, Key Objects (Visuals).
-                                     * 11-30: Conceptual, Mood, Lighting, Style (e.g., cinematic, bright, minimalism).
-                                     * 31-49: Broader categories and associations.
-                                   - Use lowercase only.
-                                   - Include specific visual descriptors (colors, materials, age, ethnicity if humans).
-                                
-                                3. RESTRICTIONS:
-                                   - NO Trademarked names (e.g., no 'iPhone', use 'smartphone').
-                                   - NO Brand logos.
-                                   - NO Celebrity names.
-
-                                Output structure example:
-                                {
-                                  "title": "A concise description of the image",
-                                  "keywords": "keyword1, keyword2, keyword3, ..."
-                                }
-                                """
-                        
-                        response = await asyncio.to_thread(model.generate_content, [prompt, {"mime_type": "image/jpeg", "data": img_bytes}])
-                        
-                        if not response.parts: raise Exception("Safety Block")
-                        data = extract_json(response.text)
-                        
-                        if data:
-                            title = data.get("title", "")
-                            keywords = data.get("keywords", "")
-                            ai_success = True
-                            break 
-                        else: raise Exception("JSON Error")
-
-                    except Exception as api_err:
-                        err_msg = str(api_err)
-                        if "400" in err_msg:
-                            show_snack(f"Key Invalid: {current_key[:5]}...")
-                            break 
-                        if "429" in err_msg or "Resource" in err_msg:
-                            key_manager.get_next()
-                            await asyncio.sleep(2) 
-                        else: raise api_err
+                response = model.generate_content([prompt, img])
+                img.close() # PENTING: Lepas file lock Windows
                 
-                if not ai_success: raise Exception("AI Gagal (Limit)")
+                text_resp = response.text.replace("```json", "").replace("```", "").strip()
+                data = json.loads(text_resp)
+                
+                title = data.get("title", "")
+                keywords = data.get("keywords", "")
 
-                files_table.rows[index].cells[1].content = ft.Text("Saving...", color=ft.Colors.PURPLE)
-                files_table.update()
+                files_table.rows[index].cells[1].content = ft.Text("Embedding...", color=ft.Colors.BLUE)
+                page.update()
                 
-                success, msg = await asyncio.to_thread(embed_metadata_strict_sync, work_path, title, keywords)
-                
-                if success:
-                    shutil.move(work_path, final_path)
-                    files_table.rows[index].cells[1].content = ft.Text("OK ✅", color=ft.Colors.GREEN)
+                if embed_metadata_hardcore(file_path, title, keywords):
+                    files_table.rows[index].cells[1].content = ft.Text("Sukses ✅", color=ft.Colors.GREEN)
                 else:
-                    raise Exception(f"Meta: {msg}")
+                    files_table.rows[index].cells[1].content = ft.Text("Gagal ❌", color=ft.Colors.RED)
 
-            except Exception as e:
-                err_s = str(e)
-                if "Permission" in err_s: show_snack("Izin Ditolak!")
-                files_table.rows[index].cells[1].content = ft.Text("Gagal ❌", color=ft.Colors.RED)
-            
-            files_table.update()
-            if os.path.exists(work_path): 
-                try: os.remove(work_path)
-                except: pass
-            
-            processed_count += 1
-            progress_bar.value = processed_count / len(selected_files)
-            progress_bar.update()
+                time.sleep(1.0) 
 
-    # --- ACTIONS ---
-    def clear_data(e):
-        nonlocal selected_files
-        if is_processing:
-            show_snack("Stop proses dulu!")
-            return
+            except Exception as err:
+                print(f"Error: {err}")
+                files_table.rows[index].cells[1].content = ft.Text(f"Error ❌", color=ft.Colors.RED)
             
-        selected_files = []
-        files_table.rows.clear()
-        files_table.visible = False
-        files_table.update()
-        
-        status_text.value = "List dibersihkan."
-        status_text.update()
-        
-        progress_bar.value = 0
+            progress_bar.value = (index + 1) / total_files
+            page.update()
+
+        status_text.value = "Selesai! Metadata tersimpan."
         progress_bar.visible = False
-        progress_bar.update()
-        
-        reset_start_button()
-
-    def reset_start_button():
-        btn_action.text = "MULAI PROSES"
-        btn_action.icon = ft.Icons.ROCKET_LAUNCH
-        btn_action.bgcolor = ft.Colors.BLUE_700
-        btn_action.disabled = False
-        btn_action.update()
-
-    async def toggle_process(e):
-        nonlocal is_processing, processed_count
-        
-        if is_processing:
-            is_processing = False
-            btn_action.text = "MENGHENTIKAN..."
-            btn_action.disabled = True
-            btn_action.bgcolor = ft.Colors.GREY
-            btn_action.update()
-            return
-
-        # ZERO LAG UI START
-        is_processing = True 
-        btn_action.text = "STOP PROSES"
-        btn_action.icon = ft.Icons.STOP_CIRCLE
-        btn_action.bgcolor = ft.Colors.RED_600
-        btn_action.update()
-        await asyncio.sleep(0.1)
-
-        if not selected_files:
-            show_snack("Pilih gambar dulu!")
-            is_processing = False
-            reset_start_button()
-            return
-        
-        if not api_key_field.value:
-            show_snack("Masukkan API Key!")
-            is_processing = False
-            reset_start_button()
-            return
-
-        ok, msg = check_storage_permission()
-        if not ok:
-            show_snack(msg)
-            is_processing = False
-            reset_start_button()
-            return
-
-        processed_count = 0
-        progress_bar.visible = True
-        progress_bar.value = 0
-        progress_bar.update()
-        
-        os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
-        key_manager = KeyManager(api_key_field.value)
-        temp_dir = tempfile.gettempdir()
-        
-        try:
-            worker_limit = int(txt_worker.value)
-            if worker_limit < 1: worker_limit = 1
-        except: worker_limit = 1
-        
-        sem = asyncio.Semaphore(worker_limit)
-        status_text.value = f"Memproses {len(selected_files)} gambar..."
-        status_text.update()
-        
-        tasks = [process_single_image(i, f, key_manager, DEFAULT_OUTPUT_DIR, temp_dir, sem) for i, f in enumerate(selected_files)]
-        await asyncio.gather(*tasks)
-
-        is_processing = False
-        status_text.value = "Semua Selesai."
-        status_text.update()
-        reset_start_button()
+        btn_process.disabled = False
+        page.update()
 
     def on_files_picked(e: ft.FilePickerResultEvent):
         nonlocal selected_files
@@ -387,80 +157,66 @@ def main(page: ft.Page):
             selected_files = e.files
             files_table.rows.clear()
             for f in selected_files:
-                files_table.rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text(f.name[:12]+"..", size=12)), ft.DataCell(ft.Text("Wait", size=12))]))
+                files_table.rows.append(
+                    ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(f.name)),
+                        ft.DataCell(ft.Text("Waiting")),
+                    ])
+                )
             files_table.visible = True
-            files_table.update()
-            btn_action.disabled = False 
-            btn_action.update()
-            status_text.value = f"{len(selected_files)} gambar siap."
-            status_text.update()
+            btn_process.disabled = False
+            status_text.value = f"{len(selected_files)} gambar dipilih."
+            page.update()
 
     file_picker = ft.FilePicker(on_result=on_files_picked)
     page.overlay.append(file_picker)
 
-    # --- LAYOUT CONSTRUCTION ---
-    btn_pick = ft.ElevatedButton("Ambil Gambar", icon=ft.Icons.PHOTO_LIBRARY, on_click=lambda _: file_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.IMAGE), expand=True)
-    btn_clear = ft.ElevatedButton("Clear", icon=ft.Icons.CLEAR_ALL, color=ft.Colors.RED, on_click=clear_data)
-    
-    btn_action = ft.ElevatedButton(
-        text="MULAI PROSES", 
-        icon=ft.Icons.ROCKET_LAUNCH, 
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8)), 
+    # --- UI Elements ---
+    btn_pick = ft.ElevatedButton(
+        "Pilih Gambar",
+        icon=ft.Icons.PHOTO_LIBRARY,
+        on_click=lambda _: file_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.IMAGE)
+    )
+
+    btn_process = ft.ElevatedButton(
+        "Start Adding Metadata",
+        icon=ft.Icons.SAVE_AS,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
         disabled=True,
-        height=50,
-        on_click=toggle_process
+        on_click=process_queue
     )
     
-    btn_help = ft.TextButton("Bantuan (WA)", icon=ft.Icons.CHAT, on_click=open_wa)
-    btn_tools = ft.TextButton("Tools Lainnya", icon=ft.Icons.LINK, on_click=open_tools)
+    # --- TOMBOL BANTUAN ---
+    btn_help = ft.ElevatedButton(
+        text="Butuh Bantuan? Hubungi Kami",
+        icon=ft.Icons.HELP_OUTLINE, # Ikon tanda tanya
+        style=ft.ButtonStyle(
+            color=ft.Colors.WHITE,
+            bgcolor=ft.Colors.GREEN_600, # Warna hijau khas chat app
+        ),
+        width=float("inf"), # Tombol melebar penuh
+        on_click=lambda _: page.launch_url(SUPPORT_URL)
+    )
 
-    # --- CONTAINER UTAMA ---
+    # --- Final Layout ---
     page.add(
         ft.Column([
-            ft.Text("Ai Metadata Pro", size=20, weight=ft.FontWeight.BOLD),
+            ft.Text("Stock AI Metadata Generator", size=24, weight=ft.FontWeight.BOLD),
+            ft.Text("Otomatis Menambahkan Judul & Keyword ke Image.", size=12),
+            ft.Divider(),
             api_key_field,
-            ft.Container(height=5),
-            
-            ft.Row([
-                txt_worker,
-                ft.Text("Rekomendasi worker: 1\n(Agar HP tidak panas)", size=10, color=ft.Colors.GREY, expand=True)
-            ], alignment=ft.MainAxisAlignment.START),
-            
-            ft.Divider(),
-            
-            ft.Row([btn_pick, btn_clear]),
-            ft.Container(height=5),
-            
-            # Tombol Mulai
-            ft.Container(content=btn_action, width=float("inf")),
             ft.Container(height=10),
-
-            # --- BAGIAN INI DIPINDAH KE ATAS ---
-            # Kotak Status Dashboard
-            ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=ft.Colors.BLUE_700),
-                        status_text
-                    ]),
-                    progress_bar,
-                ], spacing=5),
-                bgcolor=ft.Colors.BLUE_50, # Background Biru Muda biar jelas
-                padding=10,
-                border_radius=10,
-                border=ft.border.all(1, ft.Colors.BLUE_100)
-            ),
-            # -----------------------------------
-            
+            btn_pick,
             ft.Container(height=10),
-            
-            # Tabel Gambar ada di bawah Status
             files_table,
-            
-            ft.Divider(),
-            ft.Row([btn_help, btn_tools], alignment=ft.MainAxisAlignment.CENTER),
-            
-        ], scroll=ft.ScrollMode.ADAPTIVE)
+            progress_bar,
+            status_text,
+            ft.Container(height=10),
+            btn_process,
+            ft.Divider(), # Pemisah antara fitur utama dan support
+            ft.Container(height=20), # Jarak kosong
+            btn_help # Tombol bantuan ditaruh paling bawah
+        ])
     )
 
-ft.app(target=main)
+ft.app(target=main, assets_dir="assets")
