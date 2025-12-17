@@ -484,4 +484,4 @@ def main(page: ft.Page):
         ], scroll=ft.ScrollMode.ADAPTIVE)
     )
 
-ft.app(target=main, assets_dir="assets")
+ft.app(target=main)
