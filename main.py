@@ -90,7 +90,7 @@ def main(page: ft.Page):
         padding=15,
         border_radius=10,
         border=ft.border.all(1, ft.Colors.BLUE_200),
-        animate=ft.animation.Animation(300, ft.AnimationCurve.EASE_OUT) # Animasi perubahan warna
+        animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT)
     )
 
     # --- FUNGSI UPDATE STATUS (CORE UPDATE) ---
@@ -485,3 +485,4 @@ def main(page: ft.Page):
     )
 
 ft.app(target=main)
+
