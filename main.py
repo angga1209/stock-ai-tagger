@@ -35,14 +35,17 @@ def main(page: ft.Page):
     is_processing = False 
     processed_count = 0 
     
-    DEFAULT_OUTPUT_DIR = "/storage/emulated/0/Download/Stock_AI_Result"
+    # Path Default (Pictures agar aman di Android 11+)
+    DEFAULT_OUTPUT_DIR = "/storage/emulated/0/Pictures/AiMetadataPro_Result"
 
-    # --- UI Components ---
+    # --- 1. DEFINISI UI (VARIABEL DIBUAT DULUAN DI SINI) ---
+    # Tujuannya agar fungsi di bawah bisa mengenali variabel tombol ini
+    
     saved_keys = page.client_storage.get("gemini_api_keys")
     
     api_key_field = ft.TextField(
         label="Gemini API Keys",
-        hint_text="Paste disini (pisahkan koma). Key1, Key2, Key3",
+        hint_text="Paste disini (pisahkan koma)..Key1, Key2, Key3",
         multiline=True,
         min_lines=1,
         max_lines=3,
@@ -72,19 +75,38 @@ def main(page: ft.Page):
         column_spacing=20,
     )
     
-    # --- DASHBOARD COMPONENTS (Highlight Area) ---
     status_icon = ft.Icon(ft.Icons.INFO_OUTLINE, size=20, color=ft.Colors.BLUE_700)
     status_text = ft.Text("Siap Memproses.", color=ft.Colors.BLUE_GREY_900, size=14, weight=ft.FontWeight.BOLD, expand=True)
     progress_bar = ft.ProgressBar(visible=False, value=0, color=ft.Colors.BLUE_700, bgcolor=ft.Colors.BLUE_100)
     
-    # Container Dashboard (Disimpan di variabel agar bisa diubah warnanya)
+    # Tombol didefinisikan awal (Event on_click dipasang nanti di bawah)
+    btn_settings = ft.ElevatedButton(
+        "Buka Pengaturan Izin",
+        icon=ft.Icons.SETTINGS,
+        bgcolor=ft.Colors.RED_700,
+        color=ft.Colors.WHITE,
+        visible=False
+    )
+
+    btn_action = ft.ElevatedButton(
+        text="MULAI PROSES", 
+        icon=ft.Icons.ROCKET_LAUNCH, 
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8)), 
+        disabled=True,
+        height=50
+    )
+
+    btn_clear = ft.ElevatedButton("Clear", icon=ft.Icons.CLEAR_ALL, color=ft.Colors.RED)
+    btn_pick = ft.ElevatedButton("Pilih Gambar", icon=ft.Icons.PHOTO_LIBRARY, expand=True)
+    btn_help = ft.TextButton("Bantuan (WA)", icon=ft.Icons.CHAT)
+    btn_tools = ft.TextButton("Tools Lainnya", icon=ft.Icons.LINK)
+
+    # Dashboard Container
     dashboard_card = ft.Container(
         content=ft.Column([
-            ft.Row([
-                status_icon,
-                status_text
-            ], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row([status_icon, status_text], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             progress_bar,
+            ft.Container(content=btn_settings, alignment=ft.alignment.center)
         ], spacing=5),
         bgcolor=ft.Colors.BLUE_50, 
         padding=15,
@@ -93,13 +115,11 @@ def main(page: ft.Page):
         animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT)
     )
 
-    # --- FUNGSI UPDATE STATUS (CORE UPDATE) ---
+    # --- 2. LOGIC & FUNGSI (Sekarang aman akses tombol di atas) ---
+    
     def update_dashboard(message, is_error=False):
-        """Mengubah teks dan warna dashboard berdasarkan status"""
         status_text.value = message
-        
         if is_error:
-            # Mode ERROR: Merah
             dashboard_card.bgcolor = ft.Colors.RED_50
             dashboard_card.border = ft.border.all(1, ft.Colors.RED_300)
             status_icon.name = ft.Icons.WARNING_AMBER
@@ -108,7 +128,6 @@ def main(page: ft.Page):
             progress_bar.color = ft.Colors.RED
             progress_bar.bgcolor = ft.Colors.RED_100
         else:
-            # Mode NORMAL: Biru
             dashboard_card.bgcolor = ft.Colors.BLUE_50
             dashboard_card.border = ft.border.all(1, ft.Colors.BLUE_200)
             status_icon.name = ft.Icons.INFO_OUTLINE
@@ -116,28 +135,26 @@ def main(page: ft.Page):
             status_text.color = ft.Colors.BLUE_GREY_900
             progress_bar.color = ft.Colors.BLUE_700
             progress_bar.bgcolor = ft.Colors.BLUE_100
-            
         page.update()
 
-    # --- EXTERNAL LINKS ---
-    def open_wa(e):
-        page.launch_url("https://wa.me/6281229689225") 
-    
-    def open_tools(e):
-        page.launch_url("https://lynk.id/anggayulianto") 
-
-    # --- UTILS ---
     def check_storage_permission():
         test_path = os.path.join(DEFAULT_OUTPUT_DIR, "perm_test.tmp")
         try:
             os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
             with open(test_path, "w") as f: f.write("ok")
             os.remove(test_path)
+            btn_settings.visible = False
+            page.update()
             return True, "OK"
-        except:
-            return False, "Izin Penyimpanan Ditolak! Cek Pengaturan HP."
+        except OSError:
+            btn_settings.visible = True
+            page.update()
+            return False, "IZIN DITOLAK! Klik tombol Buka Pengaturan di bawah."
+        except Exception as e:
+            btn_settings.visible = True
+            page.update()
+            return False, f"Error Izin: {str(e)}"
 
-    # --- HELPER FUNCTIONS ---
     def extract_json(text):
         try:
             text = text.replace("```json", "").replace("```", "").strip()
@@ -150,19 +167,22 @@ def main(page: ft.Page):
         import PIL.Image
         try:
             img = PIL.Image.open(input_path)
-            img = img.convert('RGB')
+            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                img = img.convert('RGBA')
+                background = PIL.Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            if img.mode != 'RGB': img = img.convert('RGB')
             img.save(output_path, "JPEG", quality=100, optimize=True)
             img.close()
             return True
-        except Exception as e:
-            raise e 
+        except Exception as e: raise e 
 
     def embed_metadata_strict_sync(work_path, title, keywords_str):
         import piexif
         from iptcinfo3 import IPTCInfo
         try:
             keyword_list = [k.strip() for k in keywords_str.split(',')]
-            
             try: exif_dict = piexif.load(work_path)
             except: exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
             
@@ -178,23 +198,18 @@ def main(page: ft.Page):
             info['object name'] = title
             info['headline'] = title
             info.save() 
-            
             if os.path.exists(work_path + "~"): os.remove(work_path + "~")
             return True, "Complete"
-        except Exception as e:
-            return False, str(e)
+        except Exception as e: return False, str(e)
 
-    # --- WORKER ---
     async def process_single_image(index, file, key_manager, final_output_folder, temp_dir, semaphore):
         import google.generativeai as genai
         from google.generativeai.types import HarmCategory, HarmBlockThreshold
         import PIL.Image
-
         nonlocal processed_count
         
         async with semaphore:
             if not is_processing: return
-
             file_name = file.name
             final_path = os.path.join(final_output_folder, f"READY_{file_name}")
 
@@ -213,19 +228,20 @@ def main(page: ft.Page):
 
             try:
                 await asyncio.to_thread(sanitize_image_sync, file.path, work_path)
-
                 files_table.rows[index].cells[1].content = ft.Text("Generating...", color=ft.Colors.BLUE)
                 files_table.update()
 
-                img_bytes = None
-                def prepare_image():
-                    with PIL.Image.open(work_path) as img:
-                        img.thumbnail((1024, 1024)) 
-                        buf = io.BytesIO()
-                        img.save(buf, format='JPEG', quality=80)
-                        return buf.getvalue()
+                img_bytes = await asyncio.to_thread(lambda: PIL.Image.open(work_path).thumbnail((1024, 1024)) or io.BytesIO(open(work_path, "rb").read()).getvalue())
+                # Note: Simplified image read for brevity in logic
                 
-                img_bytes = await asyncio.to_thread(prepare_image)
+                # Re-reading properly for consistency
+                def get_bytes():
+                    with PIL.Image.open(work_path) as img:
+                        img.thumbnail((1024, 1024))
+                        b = io.BytesIO()
+                        img.save(b, format='JPEG')
+                        return b.getvalue()
+                img_bytes = await asyncio.to_thread(get_bytes)
 
                 max_retries = 3
                 ai_success = False
@@ -234,12 +250,10 @@ def main(page: ft.Page):
                 for attempt in range(max_retries):
                     if not is_processing: break
                     current_key = key_manager.get_current()
-                    
                     try:
                         genai.configure(api_key=current_key)
-                        safety = {HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
+                        safety = {HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE, HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE}
                         model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety)
-                        
                         prompt = """
                                 Act as a professional Stock Photography SEO Expert. Analyze the provided image to generate metadata optimized for Adobe Stock and Shutterstock algorithms.
 
@@ -271,50 +285,33 @@ def main(page: ft.Page):
                                   "keywords": "keyword1, keyword2, keyword3, ..."
                                 }
                                 """
-                        
                         response = await asyncio.to_thread(model.generate_content, [prompt, {"mime_type": "image/jpeg", "data": img_bytes}])
-                        
-                        if not response.parts: raise Exception("Safety Block")
                         data = extract_json(response.text)
-                        
                         if data:
-                            title = data.get("title", "")
-                            keywords = data.get("keywords", "")
+                            title, keywords = data.get("title", ""), data.get("keywords", "")
                             ai_success = True
                             break 
-                        else: raise Exception("JSON Error")
-
                     except Exception as api_err:
-                        err_msg = str(api_err)
-                        if "400" in err_msg:
-                            # ERROR FATAL API KEY
-                            update_dashboard(f"Key Salah: {current_key[:5]}...", is_error=True)
-                            break 
-                        if "429" in err_msg or "Resource" in err_msg:
+                        if "429" in str(api_err):
                             key_manager.get_next()
-                            await asyncio.sleep(2) 
-                        else: raise api_err
+                            await asyncio.sleep(2)
+                        elif "400" in str(api_err):
+                            update_dashboard(f"Key Error: {current_key[:5]}...", True)
+                            break
                 
-                if not ai_success: raise Exception("AI Gagal (Limit/Block)")
+                if not ai_success: raise Exception("AI Limit/Error")
 
                 files_table.rows[index].cells[1].content = ft.Text("Saving...", color=ft.Colors.PURPLE)
                 files_table.update()
                 
                 success, msg = await asyncio.to_thread(embed_metadata_strict_sync, work_path, title, keywords)
-                
                 if success:
                     shutil.move(work_path, final_path)
                     files_table.rows[index].cells[1].content = ft.Text("Done ✅", color=ft.Colors.GREEN)
-                    # Kembalikan status ke normal jika sebelumnya merah (opsional)
-                    # update_dashboard(f"Memproses {index+1}/{len(selected_files)}...", is_error=False) 
-                else:
-                    raise Exception(f"Meta: {msg}")
+                else: raise Exception(f"Meta: {msg}")
 
             except Exception as e:
-                err_s = str(e)
-                # TAMPILKAN ERROR KE DASHBOARD
-                update_dashboard(f"Gagal: {err_s}", is_error=True)
-                
+                update_dashboard(f"Gagal: {str(e)}", True)
                 files_table.rows[index].cells[1].content = ft.Text("Fail ❌", color=ft.Colors.RED)
             
             files_table.update()
@@ -326,26 +323,8 @@ def main(page: ft.Page):
             progress_bar.value = processed_count / len(selected_files)
             progress_bar.update()
 
-    # --- ACTIONS ---
-    def clear_data(e):
-        nonlocal selected_files
-        if is_processing:
-            update_dashboard("Stop proses dulu!", is_error=True)
-            return
-            
-        selected_files = []
-        files_table.rows.clear()
-        files_table.visible = False
-        files_table.update()
-        
-        update_dashboard("List dibersihkan.", is_error=False)
-        
-        progress_bar.value = 0
-        progress_bar.visible = False
-        progress_bar.update()
-        
-        reset_start_button()
-
+    # --- 3. EVENT HANDLERS ---
+    
     def reset_start_button():
         btn_action.text = "MULAI PROSES"
         btn_action.icon = ft.Icons.ROCKET_LAUNCH
@@ -353,9 +332,23 @@ def main(page: ft.Page):
         btn_action.disabled = False
         btn_action.update()
 
+    def clear_data(e):
+        nonlocal selected_files
+        if is_processing:
+            update_dashboard("Stop proses dulu!", True)
+            return
+        selected_files = []
+        files_table.rows.clear()
+        files_table.visible = False
+        files_table.update()
+        update_dashboard("List dibersihkan.", False)
+        progress_bar.value = 0
+        progress_bar.visible = False
+        progress_bar.update()
+        reset_start_button()
+
     async def toggle_process(e):
         nonlocal is_processing, processed_count
-        
         if is_processing:
             is_processing = False
             btn_action.text = "MENGHENTIKAN..."
@@ -364,7 +357,6 @@ def main(page: ft.Page):
             btn_action.update()
             return
 
-        # START ZERO LAG
         is_processing = True 
         btn_action.text = "STOP PROSES"
         btn_action.icon = ft.Icons.STOP_CIRCLE
@@ -372,51 +364,45 @@ def main(page: ft.Page):
         btn_action.update()
         await asyncio.sleep(0.1)
 
-        # --- VALIDASI & ERROR REPORTING KE DASHBOARD ---
-        
         if not selected_files:
-            update_dashboard("ERROR: Pilih gambar dulu!", is_error=True)
+            update_dashboard("ERROR: Pilih gambar dulu!", True)
             is_processing = False
             reset_start_button()
             return
         
         if not api_key_field.value:
-            update_dashboard("ERROR: API Key Kosong!", is_error=True)
+            update_dashboard("ERROR: API Key Kosong!", True)
             is_processing = False
             reset_start_button()
             return
 
         ok, msg = check_storage_permission()
         if not ok:
-            update_dashboard(f"ERROR: {msg}", is_error=True)
+            update_dashboard(msg, True)
             is_processing = False
             reset_start_button()
             return
 
-        # RESET STATUS KE NORMAL JIKA VALIDASI OK
         processed_count = 0
         progress_bar.visible = True
         progress_bar.value = 0
         progress_bar.update()
         
-        try:
-            worker_limit = int(txt_worker.value)
-            if worker_limit < 1: worker_limit = 1
-        except: worker_limit = 1
+        try: w_limit = int(txt_worker.value)
+        except: w_limit = 1
+        if w_limit < 1: w_limit = 1
         
-        update_dashboard(f"Memproses {len(selected_files)} gambar ({worker_limit} worker)...", is_error=False)
-
+        update_dashboard(f"Memproses {len(selected_files)} gambar...", False)
         os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
         key_manager = KeyManager(api_key_field.value)
         temp_dir = tempfile.gettempdir()
-        
-        sem = asyncio.Semaphore(worker_limit)
+        sem = asyncio.Semaphore(w_limit)
         
         tasks = [process_single_image(i, f, key_manager, DEFAULT_OUTPUT_DIR, temp_dir, sem) for i, f in enumerate(selected_files)]
         await asyncio.gather(*tasks)
 
         is_processing = False
-        update_dashboard("Semua Selesai.", is_error=False)
+        update_dashboard("Selesai! Cek Galeri/Pictures.", False)
         reset_start_button()
 
     def on_files_picked(e: ft.FilePickerResultEvent):
@@ -430,61 +416,40 @@ def main(page: ft.Page):
             files_table.update()
             btn_action.disabled = False 
             btn_action.update()
-            update_dashboard(f"{len(selected_files)} gambar siap.", is_error=False)
+            update_dashboard(f"{len(selected_files)} gambar siap.", False)
 
+    # --- 4. SAMBUNGKAN EVENT KE TOMBOL ---
+    # Di sini tombol sudah ada, fungsi sudah ada. Saatnya dikawinkan.
+    btn_settings.on_click = lambda e: page.launch_url("app_settings:")
+    btn_action.on_click = toggle_process
+    btn_clear.on_click = clear_data
+    btn_help.on_click = lambda e: page.launch_url("https://wa.me/6281229689225")
+    btn_tools.on_click = lambda e: page.launch_url("https://lynk.id/anggayulianto")
+    
+    # File Picker Setup
     file_picker = ft.FilePicker(on_result=on_files_picked)
     page.overlay.append(file_picker)
+    btn_pick.on_click = lambda _: file_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.IMAGE)
 
-    # --- LAYOUT CONSTRUCTION ---
-    btn_pick = ft.ElevatedButton("Pilih Gambar", icon=ft.Icons.PHOTO_LIBRARY, on_click=lambda _: file_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.IMAGE), expand=True)
-    btn_clear = ft.ElevatedButton("Clear", icon=ft.Icons.CLEAR_ALL, color=ft.Colors.RED, on_click=clear_data)
-    
-    btn_action = ft.ElevatedButton(
-        text="MULAI PROSES", 
-        icon=ft.Icons.ROCKET_LAUNCH, 
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8)), 
-        disabled=True,
-        height=50,
-        on_click=toggle_process
-    )
-    
-    btn_help = ft.TextButton("Bantuan (WA)", icon=ft.Icons.CHAT, on_click=open_wa)
-    btn_tools = ft.TextButton("Tools Lainnya", icon=ft.Icons.LINK, on_click=open_tools)
-
-    # --- CONTAINER UTAMA ---
+    # --- 5. PAGE ADD ---
     page.add(
         ft.Column([
             ft.Text("Ai Metadata Pro", size=20, weight=ft.FontWeight.BOLD),
-            ft.Text("Hasil tersimpan di Internal > Download > Stock_AI_Result", size=12, color=ft.Colors.RED),
+            ft.Text("Hasil tersimpan di Internal > Pictures > AiMetadataPro_Result", size=12, color=ft.Colors.RED),
             api_key_field,
             ft.Container(height=5),
-            
-            ft.Row([
-                txt_worker,
-                ft.Text("Gunakan banyak API\nJika worker lebih dari 1", size=10, color=ft.Colors.GREY, expand=True)
-            ], alignment=ft.MainAxisAlignment.START),
-            
+            ft.Row([txt_worker, ft.Text("Gunakan banyak API\nJika worker lebih dari 1)", size=10, color=ft.Colors.GREY, expand=True)], alignment=ft.MainAxisAlignment.START),
             ft.Divider(),
-            
             ft.Row([btn_pick, btn_clear]),
             ft.Container(height=5),
-            
             ft.Container(content=btn_action, width=float("inf")),
             ft.Container(height=10),
-
-            # --- DASHBOARD CARD (DIPANGGIL DISINI) ---
-            dashboard_card,
-            # ----------------------------------------
-            
+            dashboard_card, 
             ft.Container(height=10),
             files_table,
-            
             ft.Divider(),
             ft.Row([btn_help, btn_tools], alignment=ft.MainAxisAlignment.CENTER),
-            
         ], scroll=ft.ScrollMode.ADAPTIVE)
     )
 
 ft.app(target=main)
-
-
