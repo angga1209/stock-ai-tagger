@@ -37,7 +37,8 @@ jobs:
       # 6. Build APK
       - name: Flet Build APK
         run: |
-          flet build apk --verbose
+          flet build apk --verbose \
+            --permissions "android.permission.READ_EXTERNAL_STORAGE,android.permission.WRITE_EXTERNAL_STORAGE,android.permission.MANAGE_EXTERNAL_STORAGE"
 
       # 7. Upload APK (FIXED PATH)
       # Menggunakan wildcard (**) agar GitHub mencari sendiri lokasi file .apk nya
