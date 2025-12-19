@@ -455,6 +455,7 @@ def main(page: ft.Page):
     page.add(
         ft.Column([
             ft.Text("Ai Metadata Pro", size=20, weight=ft.FontWeight.BOLD),
+            ft.Text("Hasil tersimpan di Internal > Download > Stock_AI_Result", size=12, color=ft.Colors.RED),
             api_key_field,
             ft.Container(height=5),
             
@@ -485,4 +486,5 @@ def main(page: ft.Page):
     )
 
 ft.app(target=main)
+
 
